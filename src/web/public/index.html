@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flightdeck — Control Plane for Coding Agents</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+  <div class="window-frame">
+    <!-- macOS Window Titlebar -->
+    <header class="titlebar">
+      <div class="traffic-lights">
+        <span class="light red"></span>
+        <span class="light yellow"></span>
+        <span class="light green"></span>
+      </div>
+      <div class="titlebar-center">
+        <span class="app-icon">⚡</span>
+        <span class="app-title">Flightdeck Control Plane — <span id="project-title-label">flightdeck</span></span>
+      </div>
+      <div class="titlebar-actions">
+        <button id="btn-refresh" class="btn-ghost" title="Refresh state">↻</button>
+        <button id="btn-spectate-all" class="btn-ghost" title="Spectator Mode">☵</button>
+        <button id="btn-theme-toggle" class="btn-ghost" title="Settings">⚙</button>
+      </div>
+    </header>
+
+    <!-- Main 3-Column Layout -->
+    <div class="app-body">
+      <!-- 1. LEFT COLUMN: Projects & Tree Navigator -->
+      <aside class="sidebar-left">
+        <div class="sidebar-header">
+          <div class="sidebar-title-row">
+            <h3>Projects</h3>
+            <div class="sidebar-tools">
+              <button id="btn-add-project" class="btn-icon" title="New project">+</button>
+              <button id="btn-collapse-all" class="btn-icon" title="Collapse tree">▤</button>
+            </div>
+          </div>
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="project-search" placeholder="Filter projects..." />
+            <kbd class="shortcut-tag">⌘J</kbd>
+          </div>
+        </div>
+
+        <div class="projects-tree custom-scrollbar">
+          <!-- Active Flightdeck Project Section -->
+          <div class="tree-group active-group">
+            <div class="tree-item group-header" data-id="project-flightdeck">
+              <span class="chevron">▼</span>
+              <span class="folder-icon">📁</span>
+              <span class="item-name font-bold">flightdeck</span>
+            </div>
+            <div class="tree-children">
+              <div class="account-badge">
+                <span class="badge-dot"></span>
+                <span class="account-email" id="account-label">default (elliot@nturemedias.com)</span>
+              </div>
+              <div class="tree-item indent-1" data-section="mac-app">
+                <span class="chevron">▶</span>
+                <span class="icon">🖥</span>
+                <span class="item-name">mac-app</span>
+                <span class="count-pill">1</span>
+              </div>
+              <div class="tree-item indent-1" data-section="PSL">
+                <span class="chevron">▶</span>
+                <span class="icon">📜</span>
+                <span class="item-name">PSL</span>
+              </div>
+              <div class="tree-item indent-1" data-section="play">
+                <span class="chevron">▶</span>
+                <span class="icon">🎮</span>
+                <span class="item-name">play</span>
+                <span class="status-dot-amber"></span>
+              </div>
+              <div class="tree-item indent-1" data-section="SwiftTerm">
+                <span class="chevron">▶</span>
+                <span class="icon">⌨</span>
+                <span class="item-name">SwiftTerm</span>
+              </div>
+              <div class="tree-item indent-1 active" data-section="Inboxes">
+                <span class="chevron">▶</span>
+                <span class="icon">📥</span>
+                <span class="item-name">Inboxes</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Playbooks">
+                <span class="chevron">▶</span>
+                <span class="icon">⚡</span>
+                <span class="item-name">Playbooks</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Tables">
+                <span class="chevron">▶</span>
+                <span class="icon">📊</span>
+                <span class="item-name">Tables</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Mobile">
+                <span class="chevron">▶</span>
+                <span class="icon">📱</span>
+                <span class="item-name">Mobile</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Engineering">
+                <span class="chevron">▼</span>
+                <span class="icon">⚙</span>
+                <span class="item-name font-bold">Engineering</span>
+              </div>
+              <div class="tree-item indent-2 active-leaf" data-section="Lloyd">
+                <span class="icon">👤</span>
+                <span class="item-name font-semibold">Lloyd</span>
+                <span class="live-dot green"></span>
+              </div>
+              <div class="tree-item indent-1" data-section="Support">
+                <span class="chevron">▶</span>
+                <span class="icon">🎧</span>
+                <span class="item-name">Support</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Marketing">
+                <span class="chevron">▶</span>
+                <span class="icon">📣</span>
+                <span class="item-name">Marketing</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Analytics">
+                <span class="chevron">▶</span>
+                <span class="icon">📈</span>
+                <span class="item-name">Analytics</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Product">
+                <span class="chevron">▶</span>
+                <span class="icon">💡</span>
+                <span class="item-name">Product</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Reporting">
+                <span class="chevron">▶</span>
+                <span class="icon">📋</span>
+                <span class="item-name">Reporting</span>
+              </div>
+              <div class="tree-item indent-1" data-section="Customer Service">
+                <span class="chevron">▶</span>
+                <span class="icon">🤝</span>
+                <span class="item-name">Customer Service</span>
+              </div>
+              <div class="tree-item indent-1 text-dim add-link" id="btn-add-subsystem">
+                <span class="icon">+</span>
+                <span class="item-name">Add...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Other Projects -->
+          <div class="tree-group">
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">aiera</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">Ledge</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">TiltRun</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">groundwork</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">draftframe</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">DesktopManager</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">Mockuply</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">Bakesale</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">remotey</span></div>
+            <div class="tree-item"><span class="chevron">▶</span><span class="folder-icon">📁</span><span class="item-name">HotShot</span></div>
+          </div>
+        </div>
+
+        <!-- Sidebar Footer / Profile -->
+        <div class="sidebar-footer">
+          <div class="user-profile">
+            <div class="avatar-sm pixel-avatar" style="background: linear-gradient(135deg, #f59e0b, #ec4899);"></div>
+            <div class="user-status-text">
+              <span class="user-status-label">Online</span>
+              <span class="status-indicator green"></span>
+            </div>
+          </div>
+          <div class="footer-badge">
+            <span class="pill-badge purple">Argus v1</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 2. MIDDLE COLUMN: Mission Studio / Canvas -->
+      <main class="main-canvas custom-scrollbar">
+        <!-- Breadcrumb Navigation Bar -->
+        <nav class="canvas-navbar">
+          <div class="breadcrumbs">
+            <span class="bc-item">Projects</span>
+            <span class="bc-sep">/</span>
+            <span class="bc-item">flightdeck</span>
+            <span class="bc-sep">/</span>
+            <span class="bc-item">Engineering</span>
+            <span class="bc-sep">/</span>
+            <span class="bc-item active" id="bc-current-agent">Lloyd</span>
+          </div>
+          <div class="canvas-controls">
+            <button class="control-tag" id="btn-save-indicator">#204 Saved</button>
+            <button class="btn-icon" id="btn-split-view" title="Split view">▥</button>
+            <button class="btn-icon" id="btn-fullscreen" title="Expand">⛶</button>
+          </div>
+        </nav>
+
+        <div class="canvas-content">
+          <!-- Lloyd's Mission Header Card -->
+          <section class="card mission-profile-card">
+            <div class="profile-left-col">
+              <div class="pixel-avatar-lg" id="avatar-lloyd">
+                <!-- Custom Pixel Art Avatar Canvas/SVG -->
+                <svg viewBox="0 0 16 16" class="pixel-art-svg" shape-rendering="crispEdges">
+                  <rect width="16" height="16" fill="#1c1d22"/>
+                  <rect x="4" y="3" width="8" height="9" fill="#f59e0b"/>
+                  <rect x="5" y="5" width="2" height="2" fill="#18181b"/>
+                  <rect x="9" y="5" width="2" height="2" fill="#18181b"/>
+                  <rect x="6" y="9" width="4" height="1" fill="#78350f"/>
+                  <rect x="3" y="12" width="10" height="4" fill="#3b82f6"/>
+                </svg>
+              </div>
+
+              <!-- Controls: Heartbeat & Max Children -->
+              <div class="fleet-sliders">
+                <div class="slider-group">
+                  <div class="slider-label-row">
+                    <span class="slider-label">HEARTBEAT</span>
+                    <span class="slider-value" id="val-heartbeat">63m</span>
+                  </div>
+                  <input type="range" id="slider-heartbeat" min="1" max="120" value="63" class="custom-range" />
+                </div>
+
+                <div class="slider-group">
+                  <div class="slider-label-row">
+                    <span class="slider-label">MAX CHILDREN</span>
+                    <span class="slider-value" id="val-children">16</span>
+                  </div>
+                  <input type="range" id="slider-children" min="1" max="32" value="16" class="custom-range" />
+                </div>
+
+                <div class="param-group">
+                  <span class="param-label">CHILD HARNESS</span>
+                  <select id="select-child-harness" class="custom-select">
+                    <option value="gemini">Google Gemini</option>
+                    <option value="claude">Claude Code</option>
+                    <option value="codex">Codex</option>
+                    <option value="opencode">OpenCode</option>
+                  </select>
+                </div>
+
+                <div class="param-group">
+                  <span class="param-label">ACCOUNT</span>
+                  <div class="account-pill-tag">Default (proj...</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="profile-right-col">
+              <div class="profile-header-row">
+                <h1 class="mission-title" id="fleet-title">Lloyd's Mission</h1>
+                <div class="action-buttons-row">
+                  <button class="btn-action primary" id="btn-reply-now">
+                    <span class="btn-icon">💬</span> Reply now
+                  </button>
+                  <button class="btn-action" id="btn-rendezvous">
+                    <span class="btn-icon">🔀</span> Rendezvous
+                  </button>
+                  <button class="btn-action" id="btn-view-logs">
+                    <span class="btn-icon">📋</span> Logs
+                  </button>
+                  <button class="btn-action" id="btn-open-session">
+                    <span class="btn-icon">⇗</span> Open session
+                  </button>
+                </div>
+              </div>
+
+              <!-- Expertise & Mission Info -->
+              <div class="mission-text-blocks">
+                <div class="info-block">
+                  <h4 class="block-label">EXPERTISE — HOW IT REASONS</h4>
+                  <p class="block-desc" id="expertise-desc">
+                    Expertise — how it reasons: engineering manager for the Flightdeck codebase. Builds each ticket compound-engineering style: brainstorm → plan → work → review, then a /flightdeck-codex-review of the changes. QA is Nash's — pulls him in for a build/visual check.
+                  </p>
+                </div>
+
+                <div class="info-block">
+                  <h4 class="block-label">MISSION — THE CURRENT JOB</h4>
+                  <p class="block-desc">
+                    Mission — the current job: drive the <span class="tag-inline-green">@Internal Tickets</span> table.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Every-Pulse Actions Card -->
+          <section class="card pulse-actions-card">
+            <div class="pulse-left-badge">
+              <div class="pulse-icon-box">
+                <span class="lightning-icon">⚡</span>
+              </div>
+              <p class="pulse-side-text">
+                The standing routine the Argus runs each pulse — recurring duties live here.
+              </p>
+            </div>
+
+            <div class="pulse-right-content">
+              <h3 class="section-title">Every-Pulse Actions</h3>
+              <div class="pulse-actions-list" id="pulse-actions-list">
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Run <span class="tag-inline-amber">@Bug Reports from Feedback</span> and check for new bugs and thread replies.
+                    <div class="sub-step">01 Check if new bugs could be related to recently closed PRs / tickets etc. for more context</div>
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Determine if any docs need to be updated on <code class="code-pill">/Users/nash/dev/flightdeck/website/content/docs</code> based on recent merged tickets — file and staff.
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Query THIS Flightdeck instance's logs via <code class="code-pill">query_oslog</code> (subsystems: com.flightdeck.default, com.flightdeck.app for terminal/click, work.flightdeck.app for git-poll/watcher) over the last 15 min, and scan for PROBLEMATIC entries — Error/Fault levels, crashes, exceptions, WATCHDOG fires, relaunch loops, sync/scan failures, repeated warnings.
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    If something looks worth investigating: dispatch a read-only investigation agent to root-cause it, then file a Bug ticket in <span class="tag-inline-green">@Internal Tickets</span> and staff the fix (or staff directly if the cause is obvious).
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Record each pulse's check (window + finding, even "clean") in the Lloyd log table.
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Do NOT ticket transient/expected noise — only genuine problems.
+                  </div>
+                </div>
+
+                <div class="pulse-action-item">
+                  <span class="bullet-arrow">▶</span>
+                  <div class="action-text">
+                    Add bugs/enhancements found along the way to the table directly, marked "to be prioritized with you."
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Bottom Laws & Permissions Section -->
+          <section class="card laws-card">
+            <div class="laws-header">
+              <h3 class="section-title">Laws & Permissions</h3>
+              <span class="shortcut-hint">⌥P Voice Dictation — hold or press to toggle</span>
+            </div>
+            <div class="laws-content">
+              <p class="text-dim">
+                Autonomous child limits enforced. Child sessions isolated in Git worktrees. Risky playbook and remote tools require explicit manager authorization cap.
+              </p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Bottom Tabs Bar -->
+        <footer class="canvas-tabs-bar">
+          <div class="canvas-tab active">
+            <span class="tab-icon">📄</span>
+            <span class="tab-title">Lloyd's Mission</span>
+            <span class="tab-close">×</span>
+          </div>
+          <div class="canvas-tab">
+            <span class="tab-title">ra-desktop</span>
+            <span class="tab-close">×</span>
+          </div>
+          <div class="canvas-tab">
+            <span class="tab-title">Randy Marsh</span>
+            <span class="tab-close">×</span>
+          </div>
+          <div class="canvas-tab">
+            <span class="tab-title">caffeine-604</span>
+            <span class="tab-close">×</span>
+          </div>
+        </footer>
+      </main>
+
+      <!-- 3. RIGHT COLUMN: Sessions Fleet & Action Toolkit -->
+      <aside class="sidebar-right custom-scrollbar">
+        <!-- Sessions Header -->
+        <div class="fleet-header">
+          <div class="fleet-title-row">
+            <div class="fleet-tabs">
+              <span class="fleet-tab active font-bold">Sessions</span>
+              <span class="fleet-tab text-dim">Usage</span>
+            </div>
+            <div class="fleet-tools">
+              <button class="btn-icon" id="btn-spawn-session" title="New Session">+</button>
+              <button class="btn-icon" id="btn-search-sessions" title="Filter">🔍</button>
+              <button class="btn-icon" id="btn-prune-sessions" title="Prune stopped">🗑</button>
+            </div>
+          </div>
+          <div class="sessions-filter-row">
+            <span class="filter-icon">🔍</span>
+            <input type="text" id="session-filter" placeholder="Test" />
+          </div>
+        </div>
+
+        <!-- Fleet 1: Lloyd 11 -->
+        <div class="fleet-group" id="fleet-lloyd-container">
+          <div class="fleet-group-banner">
+            <div class="banner-left">
+              <div class="avatar-xs pixel-avatar-orange"></div>
+              <span class="fleet-group-name">Lloyd</span>
+              <span class="fleet-count-tag" id="lloyd-child-count">11</span>
+            </div>
+            <div class="banner-right">
+              <span class="status-badge-green"><span class="pulse-dot"></span> Watching</span>
+              <span class="timer-tag" id="lloyd-timer">1.1h</span>
+              <button class="btn-link" id="btn-quick-reply">Reply</button>
+            </div>
+          </div>
+
+          <!-- Child Session Cards List -->
+          <div class="sessions-list" id="sessions-container">
+            <!-- Rendered dynamically by app.js -->
+          </div>
+        </div>
+
+        <!-- Fleet 2: Morty 2 (Secondary fleet) -->
+        <div class="fleet-group collapsed">
+          <div class="fleet-group-banner">
+            <div class="banner-left">
+              <div class="avatar-xs pixel-avatar-green"></div>
+              <span class="fleet-group-name">Morty</span>
+              <span class="fleet-count-tag">2</span>
+            </div>
+            <div class="banner-right">
+              <span class="status-badge-dim">Paused</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Sub-panel: Action Toolkit -->
+        <div class="toolkit-panel">
+          <div class="toolkit-header">
+            <div class="toolkit-tabs">
+              <span class="toolkit-tab active font-bold">⚡ Toolkit</span>
+              <span class="toolkit-tab text-dim">👤 Lloyd</span>
+            </div>
+            <div class="toolkit-controls">
+              <button class="btn-icon" title="Customize toolkit">⚙</button>
+              <button class="btn-icon" title="Add action">+</button>
+            </div>
+          </div>
+
+          <!-- Toolkit Grid (12 Action Buttons) -->
+          <div class="toolkit-grid">
+            <button class="toolkit-btn" data-action="create-pr">
+              <span class="play-icon">▷</span> Create PR
+            </button>
+            <button class="toolkit-btn" data-action="commit-push">
+              <span class="play-icon">▷</span> Commit & Push
+            </button>
+            <button class="toolkit-btn" data-action="worktree">
+              <span class="play-icon">▷</span> Worktree
+              <span class="mini-tag green">🌲</span>
+            </button>
+            <button class="toolkit-btn" data-action="v3-dev-server">
+              <span class="play-icon">▷</span> V3 Dev Server
+            </button>
+            <button class="toolkit-btn" data-action="create-license">
+              <span class="play-icon">▷</span> Create License
+              <span class="mini-tag amber">🔑</span>
+            </button>
+            <button class="toolkit-btn" data-action="release-notes">
+              <span class="play-icon">▷</span> Release Notes
+            </button>
+            <button class="toolkit-btn" data-action="flightdeck-dmg">
+              <span class="play-icon">▷</span> Flightdeck DMG
+              <span class="mini-tag red">💾</span>
+            </button>
+            <button class="toolkit-btn" data-action="bump-version">
+              <span class="play-icon">▷</span> Bump Version
+              <span class="mini-tag blue">📦</span>
+            </button>
+            <button class="toolkit-btn" data-action="release-dmg">
+              <span class="play-icon">▷</span> Release DMG
+            </button>
+            <button class="toolkit-btn" data-action="bump-rc">
+              <span class="play-icon">▷</span> Bump RC
+              <span class="mini-tag green">✏</span>
+            </button>
+            <button class="toolkit-btn" data-action="open-xcode">
+              <span class="play-icon">▷</span> Open in xcode
+              <span class="mini-tag yellow">✨</span>
+            </button>
+            <button class="toolkit-btn" data-action="release-rc">
+              <span class="play-icon">▷</span> Release RC
+            </button>
+          </div>
+
+          <!-- Bottom Metric Bar -->
+          <div class="toolkit-metrics-bar">
+            <span class="metric-item"><span class="metric-icon">🔋</span> 5h 40% wk</span>
+            <span class="metric-item"><span class="metric-icon">📈</span> 4% wk</span>
+            <span class="metric-item memory" id="memory-metric">674.9 MB</span>
+            <span class="metric-item ssh-tag">+ SSH</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Interactive Modal: Logs / Spectator Mode -->
+  <div id="modal-logs" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 id="logs-modal-title">Live Session Logs</h3>
+        <button class="modal-close" id="btn-close-logs">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="logs-terminal-view" class="terminal-logs">Loading logs...</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action" id="btn-refresh-logs">Refresh</button>
+        <button class="btn-action primary" id="btn-dismiss-logs">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive Modal: Reply Now (Inter-Agent Message Dispatcher) -->
+  <div id="modal-reply" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>Dispatch Message to Agent</h3>
+        <button class="modal-close" id="btn-close-reply">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="reply-target">Target Session / Fleet Manager:</label>
+          <select id="reply-target" class="custom-select">
+            <option value="">Broadcast to Fleet (*)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="reply-text">Instruction / Message:</label>
+          <textarea id="reply-text" rows="4" class="custom-textarea" placeholder="Type prompt or directive..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action" id="btn-cancel-reply">Cancel</button>
+        <button class="btn-action primary" id="btn-send-reply">Send Message ↵</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive Modal: Start New Session -->
+  <div id="modal-new-session" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>Launch Coding-Agent Session</h3>
+        <button class="modal-close" id="btn-close-new-session">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="new-session-name">Session Name:</label>
+          <input type="text" id="new-session-name" class="custom-input" placeholder="e.g. 612-feature-search" />
+        </div>
+        <div class="form-group">
+          <label for="new-session-harness">Harness:</label>
+          <select id="new-session-harness" class="custom-select">
+            <option value="gemini">Google Gemini</option>
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="new-session-task">Task Prompt:</label>
+          <textarea id="new-session-task" rows="3" class="custom-textarea" placeholder="Describe the task..."></textarea>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="new-session-headless" checked /> Run headless (non-interactive)</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action" id="btn-cancel-new-session">Cancel</button>
+        <button class="btn-action primary" id="btn-confirm-new-session">Launch Session ⚡</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
