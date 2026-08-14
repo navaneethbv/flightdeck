@@ -1,8 +1,15 @@
-// Flightdeck Web Control Plane Client
+// Flightdeck web control plane client.
+//
+// Everything rendered here comes from /api/state. There are no sample rows and
+// no illustrative values: a field the backend does not measure renders as an
+// inert dash, and a failed request renders as an error. See the spec section
+// "Prohibited: fabricated data".
+
+const NO_VALUE = '-';
 
 let state = {
   projectRoot: '',
-  projectName: 'flightdeck',
+  projectName: '',
   sessions: [],
   argus: [],
   notes: [],
@@ -11,361 +18,482 @@ let state = {
   watchdog: { hungSessions: [] },
   worktrees: [],
   playbooks: [],
-  defaultHarness: 'gemini',
+  defaultHarness: '',
 };
 
 let activeSessionIdForLogs = null;
+let selectedFleetId = null;
 
-// Mock fleet child session names and metadata for authentic Flightdeck aesthetic rendering
-const MOCK_CHILDREN = [
-  { name: '555-argus-core', alias: '555-argus...', status: 'Idle', queue: 1, step: '#729', model: 'Opus 4.8', cost: '<$0.01', pct: 56, avatar: 'purple' },
-  { name: '388-integrations', alias: '388-integ...', status: 'Idle', queue: 1, step: '#744', model: 'Opus 5', cost: '<$0.01', pct: 39, avatar: 'purple' },
-  { name: 'caffeine-604', alias: 'caffeine-604', status: 'Ready', queue: 0, step: '#757', model: 'Gemini 1.5', cost: '$0.00', pct: 0, avatar: 'orange' },
-  { name: 'Bendar 473-datastore', alias: 'Bendar 473...', status: 'Idle', queue: 2, step: '#726', model: 'Opus 4.8', cost: '<$0.01', pct: 33, avatar: 'green' },
-  { name: '549-delegate-mcp', alias: '549-deleg...', status: 'Idle', queue: 1, step: '8d ago', model: 'Fable 5', cost: '<$0.01', pct: 11, avatar: 'purple' },
-  { name: '537-bullet-parser', alias: '537-bulle...', status: 'Idle', queue: 1, step: '#727', model: 'Opus 4.8', cost: '<$0.01', pct: 36, avatar: 'blue' },
-  { name: 'slidefade-sync', alias: 'slidefade...', status: 'Waiting', queue: 3, step: '13h ago', model: 'Opus 4.8', cost: '$3.75', pct: 10, avatar: 'pink' },
-  { name: '495-docs-markdown', alias: '495-docs-...', status: 'Idle', queue: 1, step: '#710', model: 'Fable 5', cost: '<$0.01', pct: 16, avatar: 'green' },
-  { name: 'caffeine-608', alias: 'caffeine-...', status: 'Idle', queue: 1, step: '#757', model: 'Opus 4.8', cost: '<$0.01', pct: 21, avatar: 'orange' },
-  { name: '388-connect-ssh', alias: '388-conn...', status: 'Idle', queue: 1, step: '#689', model: 'Opus 5', cost: '<$0.01', pct: 50, avatar: 'blue' },
-  { name: '237-rendezvous', alias: '237-rende...', status: 'Waiting', queue: 1, step: '#611', model: 'Fable 5', cost: '$4.70', pct: 9, avatar: 'orange' },
-];
+function el(id) {
+  return document.getElementById(id);
+}
+
+function text(value) {
+  return value === null || value === undefined || value === '' ? NO_VALUE : String(value);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
+  );
+}
+
+function relativeTime(ms) {
+  if (!ms) return NO_VALUE;
+  const delta = Date.now() - ms;
+  if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))}s ago`;
+  if (delta < 3_600_000) return `${Math.round(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)}h ago`;
+  return `${Math.round(delta / 86_400_000)}d ago`;
+}
+
+// ---------------------------------------------------------------- data layer
 
 async function fetchState() {
   try {
     const res = await fetch('/api/state');
-    if (!res.ok) return;
+    if (!res.ok) {
+      showError(`state request failed: ${res.status}`);
+      return;
+    }
     state = await res.json();
+    clearError();
     renderUI();
   } catch (err) {
-    console.error('Failed to fetch state:', err);
+    showError(err.message);
   }
+}
+
+function showError(message) {
+  const banner = el('error-banner');
+  if (!banner) return;
+  banner.textContent = message;
+  banner.classList.remove('hidden');
+}
+
+function clearError() {
+  el('error-banner')?.classList.add('hidden');
 }
 
 function initSSE() {
   const evt = new EventSource('/api/events');
   evt.onmessage = (e) => {
     try {
-      const data = JSON.parse(e.data);
-      if (data.type === 'update') {
-        fetchState();
-      }
+      if (JSON.parse(e.data).type === 'update') fetchState();
     } catch {
-      // ignore
+      // A malformed frame is not worth surfacing; the next poll recovers.
     }
   };
-  evt.onerror = () => {
-    // auto reconnect
-  };
 }
+
+// ----------------------------------------------------------------- rendering
 
 function renderUI() {
-  // Update Title
-  const titleElem = document.getElementById('project-title-label');
-  if (titleElem && state.projectName) titleElem.textContent = state.projectName;
+  renderTitle();
+  renderProjectTree();
+  renderMission();
+  renderFleet();
+  renderToolkit();
+  renderReplyTargets();
+}
 
-  // Render Sessions
-  const sessionsContainer = document.getElementById('sessions-container');
-  if (sessionsContainer) {
-    sessionsContainer.innerHTML = '';
+function renderTitle() {
+  const title = el('project-title-label');
+  if (title) title.textContent = state.projectName || NO_VALUE;
+  const root = el('project-root-label');
+  if (root) root.textContent = state.projectRoot || NO_VALUE;
+  const harness = el('default-harness-label');
+  if (harness) harness.textContent = `harness: ${text(state.defaultHarness)}`;
+}
 
-    // Merge live sessions with styled display items
-    const combinedSessions = [];
+/** Real sections of the served project. One project per server process. */
+function renderProjectTree() {
+  const tree = el('projects-tree');
+  if (!tree) return;
 
-    // Add live sessions from backend
-    if (state.sessions && state.sessions.length > 0) {
-      for (const s of state.sessions) {
-        combinedSessions.push({
-          id: s.id,
-          name: s.name,
-          alias: s.name.length > 14 ? s.name.slice(0, 12) + '...' : s.name,
-          status: s.status === 'running' ? 'Running' : s.status === 'failed' ? 'Failed' : 'Idle',
-          queue: 1,
-          step: s.harness,
-          model: s.harness === 'gemini' ? 'Gemini 1.5' : s.harness === 'claude' ? 'Opus 4.8' : s.harness,
-          cost: '<$0.01',
-          pct: s.status === 'running' ? 75 : 100,
-          avatar: s.harness === 'gemini' ? 'orange' : s.harness === 'claude' ? 'purple' : 'green',
-          isLive: true,
-        });
-      }
-    }
+  const sections = [
+    { key: 'sessions', icon: '🖥', label: 'Sessions', count: state.sessions.length },
+    { key: 'worktrees', icon: '🌿', label: 'Worktrees', count: state.worktrees.length },
+    { key: 'notes', icon: '📝', label: 'Notes', count: state.notes.length },
+    { key: 'tables', icon: '📊', label: 'Tables', count: state.tables.length },
+    { key: 'playbooks', icon: '⚡', label: 'Playbooks', count: state.playbooks.length },
+    { key: 'argus', icon: '👁', label: 'Argus fleets', count: state.argus.length },
+  ];
 
-    // Append standard fleet children if fewer than 6
-    if (combinedSessions.length < 8) {
-      for (const mock of MOCK_CHILDREN) {
-        if (!combinedSessions.some(c => c.name === mock.name)) {
-          combinedSessions.push(mock);
-        }
-      }
-    }
+  tree.innerHTML = `
+    <div class="tree-group active-group">
+      <div class="tree-item group-header">
+        <span class="chevron">▼</span>
+        <span class="folder-icon">📁</span>
+        <span class="item-name font-bold">${escapeHtml(state.projectName || NO_VALUE)}</span>
+      </div>
+      <div class="tree-children">
+        ${sections
+          .map(
+            (s) => `
+          <div class="tree-item indent-1" data-section="${s.key}">
+            <span class="icon">${s.icon}</span>
+            <span class="item-name">${s.label}</span>
+            <span class="count-pill">${s.count}</span>
+          </div>`
+          )
+          .join('')}
+      </div>
+    </div>
+  `;
+}
 
-    const countTag = document.getElementById('lloyd-child-count');
-    if (countTag) countTag.textContent = combinedSessions.length;
+/**
+ * The Mission pane reflects the selected Argus fleet and its mission note.
+ * With no fleet configured there is nothing real to show, so we say so rather
+ * than rendering a specimen mission.
+ */
+function renderMission() {
+  const fleets = state.argus ?? [];
+  const fleet = fleets.find((f) => f.id === selectedFleetId) ?? fleets[0] ?? null;
+  selectedFleetId = fleet ? fleet.id : null;
 
-    for (const s of combinedSessions) {
-      const card = document.createElement('div');
-      card.className = 'session-card';
-      card.dataset.id = s.id || s.name;
+  // The pulse and permissions cards describe a fleet. With no fleet they have
+  // nothing to say, so they are hidden rather than shown as empty shells.
+  el('mission-empty')?.classList.toggle('hidden', Boolean(fleet));
+  el('mission-body')?.classList.toggle('hidden', !fleet);
+  el('pulse-card')?.classList.toggle('hidden', !fleet);
+  el('laws-card')?.classList.toggle('hidden', !fleet);
+  if (!fleet) return;
 
-      const avatarClass = `pixel-avatar-${s.avatar || 'purple'}`;
-      const statusClass = s.status.toLowerCase();
+  const title = el('fleet-title');
+  if (title) title.textContent = fleet.name || NO_VALUE;
 
-      card.innerHTML = `
-        <div class="session-card-header">
-          <div class="session-card-name-row">
-            <span class="avatar-xs ${avatarClass}"></span>
-            <span class="session-name" title="${s.name}">${s.alias}</span>
-            <span class="session-step-tag text-dim">⚡</span>
-          </div>
-          <span class="session-percent">${s.pct}%</span>
-        </div>
-        <div class="session-card-meta">
-          <span class="session-status-badge ${statusClass}">
-            <span class="status-dot">●</span> ${s.status} ${s.queue ? `↑${s.queue}` : ''} ${s.step ? ` ${s.step}` : ''}
-          </span>
-          <span class="session-model-badge">${s.model} ${s.cost}</span>
-        </div>
-        <div class="progress-bar-container">
-          <div class="progress-bar-fill" style="width: ${s.pct}%"></div>
-        </div>
-      `;
+  const status = el('fleet-status');
+  if (status) status.textContent = text(fleet.status);
 
-      card.addEventListener('click', () => {
-        openLogsModal(s.id || s.name, s.name);
-      });
-
-      sessionsContainer.appendChild(card);
-    }
+  const heartbeat = el('val-heartbeat');
+  if (heartbeat && fleet.pulseSec) {
+    const minutes = Math.max(1, Math.round(fleet.pulseSec / 60));
+    heartbeat.textContent = `${minutes}m`;
+    const slider = el('slider-heartbeat');
+    if (slider) slider.value = String(minutes);
   }
 
-  // Update Reply Modal Targets
-  const replyTarget = document.getElementById('reply-target');
-  if (replyTarget) {
-    const prev = replyTarget.value;
-    replyTarget.innerHTML = '<option value="">Broadcast to Fleet (*)</option>';
-    for (const s of state.sessions) {
-      const opt = document.createElement('option');
-      opt.value = s.id;
-      opt.textContent = `${s.name} (${s.id.slice(0, 8)})`;
-      replyTarget.appendChild(opt);
-    }
-    replyTarget.value = prev;
+  const children = el('val-children');
+  if (children && fleet.childLimit) {
+    children.textContent = String(fleet.childLimit);
+    const slider = el('slider-children');
+    if (slider) slider.value = String(fleet.childLimit);
+  }
+
+  const harnessSelect = el('select-child-harness');
+  if (harnessSelect && state.defaultHarness) harnessSelect.value = state.defaultHarness;
+
+  const note = (state.notes ?? []).find((n) => n.id === fleet.missionNoteId) ?? null;
+  const missionText = el('mission-text');
+  if (missionText) {
+    missionText.textContent = note?.body ? note.body : 'Mission note is empty or missing.';
+  }
+  const noteLabel = el('mission-note-label');
+  if (noteLabel) noteLabel.textContent = note ? note.title : NO_VALUE;
+
+  renderPulseProgress(fleet);
+  renderLaws(fleet);
+}
+
+/** Recent pulse rows are real history; there is no standing hardcoded routine. */
+function renderPulseProgress(fleet) {
+  const list = el('pulse-actions-list');
+  if (!list) return;
+  const rows = fleet.recentProgress ?? [];
+  if (rows.length === 0) {
+    list.innerHTML = `<p class="empty-state">No pulses recorded yet. Last pulse: ${escapeHtml(
+      fleet.lastPulseAt ? relativeTime(fleet.lastPulseAt) : NO_VALUE
+    )}</p>`;
+    return;
+  }
+  list.innerHTML = rows
+    .map(
+      (p) => `
+      <div class="pulse-action-item">
+        <span class="bullet-arrow">▶</span>
+        <div class="action-text">
+          <strong>${escapeHtml(p.kind ?? NO_VALUE)}</strong>
+          ${p.detail ? ` ${escapeHtml(p.detail)}` : ''}
+          <div class="sub-step">${escapeHtml(relativeTime(p.createdAt))}</div>
+        </div>
+      </div>`
+    )
+    .join('');
+}
+
+function renderLaws(fleet) {
+  const laws = el('laws-content');
+  if (!laws) return;
+  laws.innerHTML = `
+    <ul class="laws-list">
+      <li>Child limit: <strong>${escapeHtml(text(fleet.childLimit))}</strong></li>
+      <li>Risky tools (playbooks, SSH, HTTP): <strong>${fleet.riskyTools ? 'granted' : 'denied'}</strong></li>
+      <li>Children run in isolated Git worktrees and cannot spawn a further generation.</li>
+    </ul>
+  `;
+}
+
+/**
+ * One card per real session. Model, spend and progress have no backend yet, so
+ * they render as dashes until session telemetry lands.
+ */
+function renderFleet() {
+  const container = el('sessions-container');
+  if (!container) return;
+
+  const sessions = state.sessions ?? [];
+  const hung = new Set((state.watchdog?.hungSessions ?? []).map((s) => s.id ?? s));
+
+  const count = el('fleet-child-count');
+  if (count) count.textContent = String(sessions.length);
+
+  if (sessions.length === 0) {
+    container.innerHTML = `<p class="empty-state">No sessions. Start one with <code>deck session start</code>.</p>`;
+    return;
+  }
+
+  container.innerHTML = '';
+  for (const s of sessions) {
+    const card = document.createElement('div');
+    card.className = 'session-card';
+    card.dataset.id = s.id;
+
+    const status = hung.has(s.id) ? 'Hung' : s.status;
+    const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
+
+    card.innerHTML = `
+      <div class="session-card-header">
+        <div class="session-card-name-row">
+          <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
+          <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        </div>
+        <span class="session-percent" title="Progress is not measured yet">${NO_VALUE}</span>
+      </div>
+      <div class="session-card-meta">
+        <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
+          <span class="status-dot">●</span> ${escapeHtml(status)}
+        </span>
+        <span class="session-model-badge" title="Model and spend are not measured yet">
+          ${escapeHtml(s.harness)} · ${NO_VALUE}
+        </span>
+      </div>
+      <div class="session-card-footer text-dim">
+        ${escapeHtml(where)} · ${escapeHtml(relativeTime(s.lastActivityAt))}
+      </div>
+    `;
+
+    card.addEventListener('click', () => openLogsModal(s.id, s.name));
+    container.appendChild(card);
   }
 }
 
-// Modal Handlers
+/** One button per playbook that actually resolves on this project. */
+function renderToolkit() {
+  const grid = el('toolkit-grid');
+  if (!grid) return;
+  const playbooks = state.playbooks ?? [];
+
+  if (playbooks.length === 0) {
+    grid.innerHTML = `<p class="empty-state">No playbooks. Add one under <code>.flightdeck/playbooks/</code>.</p>`;
+    return;
+  }
+
+  grid.innerHTML = '';
+  for (const name of playbooks) {
+    const btn = document.createElement('button');
+    btn.className = 'toolkit-btn';
+    btn.dataset.action = name;
+    btn.innerHTML = `<span class="play-icon">▷</span> ${escapeHtml(name)}`;
+    btn.addEventListener('click', () => runToolkitAction(btn, name));
+    grid.appendChild(btn);
+  }
+}
+
+async function runToolkitAction(btn, name) {
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="play-icon">⏳</span> Running...`;
+  try {
+    const res = await fetch('/api/toolkit/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: name }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (res.ok) {
+      btn.innerHTML = `<span class="play-icon ok">✓</span> Done`;
+    } else {
+      btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
+      showError(`playbook "${name}" failed: ${payload.error ?? `HTTP ${res.status}`}`);
+    }
+  } catch (err) {
+    btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
+    showError(`playbook "${name}" failed: ${err.message}`);
+  } finally {
+    setTimeout(() => {
+      btn.innerHTML = original;
+      btn.disabled = false;
+    }, 2500);
+  }
+}
+
+function renderReplyTargets() {
+  const target = el('reply-target');
+  if (!target) return;
+  const prev = target.value;
+  target.innerHTML = '<option value="">Broadcast to fleet (*)</option>';
+  for (const s of state.sessions ?? []) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.id.slice(0, 8)})`;
+    target.appendChild(opt);
+  }
+  target.value = prev;
+}
+
+// -------------------------------------------------------------------- modals
+
 function openLogsModal(id, title) {
   activeSessionIdForLogs = id;
-  const modal = document.getElementById('modal-logs');
-  const titleElem = document.getElementById('logs-modal-title');
-  const term = document.getElementById('logs-terminal-view');
-
-  if (titleElem) titleElem.textContent = `Logs — ${title || id}`;
-  if (term) term.textContent = 'Loading logs...\n';
-  if (modal) modal.classList.remove('hidden');
-
+  const titleElem = el('logs-modal-title');
+  const term = el('logs-terminal-view');
+  if (titleElem) titleElem.textContent = `Logs: ${title || id}`;
+  if (term) term.textContent = 'Loading...';
+  el('modal-logs')?.classList.remove('hidden');
   loadLogs(id);
 }
 
 async function loadLogs(id) {
-  const term = document.getElementById('logs-terminal-view');
+  const term = el('logs-terminal-view');
+  if (!term) return;
   try {
     const res = await fetch(`/api/sessions/${id}/logs`);
-    if (res.ok) {
-      const data = await res.json();
-      if (term) term.textContent = data.logs || '[No logs written yet for this session]';
-    } else {
-      if (term) term.textContent = `[Session ${id}] Running task compound-engineering style...\nWatching worktree file changes...\nNo runtime errors recorded.`;
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      term.textContent = `Could not read logs: ${payload.error ?? `HTTP ${res.status}`}`;
+      return;
     }
-  } catch {
-    if (term) term.textContent = `[Session ${id}] Connected in Spectator Mode.\nRunning autonomous tasks cleanly.`;
+    const data = await res.json();
+    term.textContent = data.logs ? data.logs : 'No log output recorded for this session yet.';
+  } catch (err) {
+    term.textContent = `Could not read logs: ${err.message}`;
   }
+}
+
+function bindModal(openIds, modalId, closeIds) {
+  const modal = el(modalId);
+  if (!modal) return;
+  for (const id of openIds) el(id)?.addEventListener('click', () => modal.classList.remove('hidden'));
+  for (const id of closeIds) el(id)?.addEventListener('click', () => modal.classList.add('hidden'));
 }
 
 function setupEventHandlers() {
-  // Sliders
-  const hbSlider = document.getElementById('slider-heartbeat');
-  const hbVal = document.getElementById('val-heartbeat');
-  if (hbSlider && hbVal) {
-    hbSlider.addEventListener('input', (e) => {
-      hbVal.textContent = `${e.target.value}m`;
-    });
-  }
+  bindModal(['btn-reply-now'], 'modal-reply', ['btn-close-reply', 'btn-cancel-reply']);
+  bindModal(
+    ['btn-spawn-session', 'btn-open-session'],
+    'modal-new-session',
+    ['btn-close-new-session', 'btn-cancel-new-session']
+  );
+  bindModal([], 'modal-logs', ['btn-close-logs', 'btn-dismiss-logs']);
 
-  const chSlider = document.getElementById('slider-children');
-  const chVal = document.getElementById('val-children');
-  if (chSlider && chVal) {
-    chSlider.addEventListener('input', (e) => {
-      chVal.textContent = e.target.value;
-    });
-  }
-
-  // Action Buttons
-  const btnReply = document.getElementById('btn-reply-now');
-  const modalReply = document.getElementById('modal-reply');
-  if (btnReply && modalReply) {
-    btnReply.addEventListener('click', () => {
-      modalReply.classList.remove('hidden');
-    });
-  }
-
-  const btnCloseReply = document.getElementById('btn-close-reply');
-  const btnCancelReply = document.getElementById('btn-cancel-reply');
-  if (btnCloseReply && modalReply) {
-    btnCloseReply.addEventListener('click', () => modalReply.classList.add('hidden'));
-  }
-  if (btnCancelReply && modalReply) {
-    btnCancelReply.addEventListener('click', () => modalReply.classList.add('hidden'));
-  }
-
-  const btnSendReply = document.getElementById('btn-send-reply');
-  if (btnSendReply && modalReply) {
-    btnSendReply.addEventListener('click', async () => {
-      const target = document.getElementById('reply-target')?.value || null;
-      const text = document.getElementById('reply-text')?.value;
-      if (!text) return;
-      btnSendReply.textContent = 'Sending...';
-      try {
-        await fetch('/api/messages/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toSession: target, body: text, fromSession: 'user' }),
-        });
-        modalReply.classList.add('hidden');
-        document.getElementById('reply-text').value = '';
-        fetchState();
-      } catch (err) {
-        alert('Failed to send message: ' + err.message);
-      } finally {
-        btnSendReply.textContent = 'Send Message ↵';
-      }
-    });
-  }
-
-  // Logs Modal
-  const modalLogs = document.getElementById('modal-logs');
-  const btnCloseLogs = document.getElementById('btn-close-logs');
-  const btnDismissLogs = document.getElementById('btn-dismiss-logs');
-  const btnRefreshLogs = document.getElementById('btn-refresh-logs');
-  const btnViewLogs = document.getElementById('btn-view-logs');
-
-  if (btnViewLogs) {
-    btnViewLogs.addEventListener('click', () => {
-      const firstSession = state.sessions[0];
-      openLogsModal(firstSession ? firstSession.id : 'lloyd-manager', 'Lloyd Manager Fleet');
-    });
-  }
-
-  if (btnCloseLogs && modalLogs) btnCloseLogs.addEventListener('click', () => modalLogs.classList.add('hidden'));
-  if (btnDismissLogs && modalLogs) btnDismissLogs.addEventListener('click', () => modalLogs.classList.add('hidden'));
-  if (btnRefreshLogs) {
-    btnRefreshLogs.addEventListener('click', () => {
-      if (activeSessionIdForLogs) loadLogs(activeSessionIdForLogs);
-    });
-  }
-
-  // New Session Modal
-  const btnSpawn = document.getElementById('btn-spawn-session');
-  const btnOpenSession = document.getElementById('btn-open-session');
-  const modalNewSession = document.getElementById('modal-new-session');
-  const btnCloseNewSession = document.getElementById('btn-close-new-session');
-  const btnCancelNewSession = document.getElementById('btn-cancel-new-session');
-  const btnConfirmNewSession = document.getElementById('btn-confirm-new-session');
-
-  const openNewSessionModal = () => {
-    if (modalNewSession) modalNewSession.classList.remove('hidden');
-  };
-
-  if (btnSpawn) btnSpawn.addEventListener('click', openNewSessionModal);
-  if (btnOpenSession) btnOpenSession.addEventListener('click', openNewSessionModal);
-  if (btnCloseNewSession && modalNewSession) btnCloseNewSession.addEventListener('click', () => modalNewSession.classList.add('hidden'));
-  if (btnCancelNewSession && modalNewSession) btnCancelNewSession.addEventListener('click', () => modalNewSession.classList.add('hidden'));
-
-  if (btnConfirmNewSession && modalNewSession) {
-    btnConfirmNewSession.addEventListener('click', async () => {
-      const name = document.getElementById('new-session-name')?.value || 'session';
-      const harness = document.getElementById('new-session-harness')?.value || 'gemini';
-      const task = document.getElementById('new-session-task')?.value || '';
-      const headless = document.getElementById('new-session-headless')?.checked ?? true;
-
-      btnConfirmNewSession.textContent = 'Launching...';
-      try {
-        await fetch('/api/sessions/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, harness, task, headless, prompt: task }),
-        });
-        modalNewSession.classList.add('hidden');
-        document.getElementById('new-session-name').value = '';
-        document.getElementById('new-session-task').value = '';
-        fetchState();
-      } catch (err) {
-        alert('Failed to launch session: ' + err.message);
-      } finally {
-        btnConfirmNewSession.textContent = 'Launch Session ⚡';
-      }
-    });
-  }
-
-  // Toolkit Buttons
-  document.querySelectorAll('.toolkit-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const action = btn.dataset.action;
-      const origText = btn.innerHTML;
-      btn.innerHTML = `<span class="play-icon">⏳</span> Running...`;
-      try {
-        const res = await fetch('/api/toolkit/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action }),
-        });
-        if (res.ok) {
-          btn.innerHTML = `<span class="play-icon" style="color:#22c55e;">✓</span> Done`;
-          setTimeout(() => { btn.innerHTML = origText; }, 1500);
-        } else {
-          btn.innerHTML = `<span class="play-icon" style="color:#22c55e;">✓</span> Triggered`;
-          setTimeout(() => { btn.innerHTML = origText; }, 1500);
-        }
-      } catch {
-        btn.innerHTML = `<span class="play-icon" style="color:#22c55e;">✓</span> OK`;
-        setTimeout(() => { btn.innerHTML = origText; }, 1500);
-      }
-    });
+  el('btn-refresh-logs')?.addEventListener('click', () => {
+    if (activeSessionIdForLogs) loadLogs(activeSessionIdForLogs);
   });
 
-  // Project Tree Filter
-  const projectSearch = document.getElementById('project-search');
-  if (projectSearch) {
-    projectSearch.addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      document.querySelectorAll('.tree-item').forEach((item) => {
-        const name = item.textContent.toLowerCase();
-        if (!q || name.includes(q)) {
-          item.style.display = 'flex';
-        } else {
-          item.style.display = 'none';
-        }
-      });
-    });
-  }
+  el('btn-view-logs')?.addEventListener('click', () => {
+    const first = (state.sessions ?? [])[0];
+    if (!first) {
+      showError('No sessions to show logs for.');
+      return;
+    }
+    openLogsModal(first.id, first.name);
+  });
 
-  // Refresh Button
-  const btnRefresh = document.getElementById('btn-refresh');
-  if (btnRefresh) {
-    btnRefresh.addEventListener('click', () => {
-      btnRefresh.style.transform = 'rotate(180deg)';
-      setTimeout(() => { btnRefresh.style.transform = 'none'; }, 300);
+  el('btn-send-reply')?.addEventListener('click', async () => {
+    const btn = el('btn-send-reply');
+    const body = el('reply-text')?.value;
+    if (!body) return;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    try {
+      const res = await fetch('/api/messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          toSession: el('reply-target')?.value || null,
+          body,
+          fromSession: 'user',
+        }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? `HTTP ${res.status}`);
+      }
+      el('modal-reply')?.classList.add('hidden');
+      el('reply-text').value = '';
       fetchState();
-    });
-  }
+    } catch (err) {
+      showError(`send failed: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Send message';
+    }
+  });
+
+  el('btn-confirm-new-session')?.addEventListener('click', async () => {
+    const btn = el('btn-confirm-new-session');
+    const name = el('new-session-name')?.value;
+    if (!name) {
+      showError('Session name is required.');
+      return;
+    }
+    const task = el('new-session-task')?.value || '';
+    btn.disabled = true;
+    btn.textContent = 'Launching...';
+    try {
+      const res = await fetch('/api/sessions/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          harness: el('new-session-harness')?.value || state.defaultHarness,
+          task,
+          headless: el('new-session-headless')?.checked ?? true,
+          prompt: task,
+        }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? `HTTP ${res.status}`);
+      }
+      el('modal-new-session')?.classList.add('hidden');
+      el('new-session-name').value = '';
+      el('new-session-task').value = '';
+      fetchState();
+    } catch (err) {
+      showError(`launch failed: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Launch session';
+    }
+  });
+
+  el('project-search')?.addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase().trim();
+    for (const item of document.querySelectorAll('.tree-item')) {
+      item.style.display = !q || item.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
+    }
+  });
+
+  el('btn-refresh')?.addEventListener('click', fetchState);
 }
 
-// Boot
 document.addEventListener('DOMContentLoaded', () => {
   setupEventHandlers();
   fetchState();
   initSSE();
-  // Poll state every 4s as fallback
   setInterval(fetchState, 4000);
 });

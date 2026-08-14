@@ -1,0 +1,226 @@
+# Flightdeck (`deck`)
+
+> **Terminal & Web Control-Plane for AI Coding Agents** — Run, isolate, supervise, and orchestrate fleets of coding-agent harnesses (Google Gemini, Claude Code, OpenAI Codex, OpenCode) across Git worktrees with MCP tools, structured project memory, and autonomous Argus orchestration.
+
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-green.svg)](https://nodejs.org/)
+[![MCP](https://img.shields.io/badge/MCP-Protocol%20v1.12-purple.svg)](https://modelcontextprotocol.io/)
+
+---
+
+## ⚡ Overview
+
+**Flightdeck** (`deck`) provides a local, terminal-first and browser-ready control plane for AI coding agents. It runs coding-agent CLI binaries inside isolated Git worktrees, exposes a rich Model Context Protocol (MCP) server over stdio for agents to interact with project state, and orchestrates multi-agent fleets driven by structured Mission notes.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Flightdeck Control Plane                          │
+├──────────────────────────┬──────────────────────────┬───────────────────────────┤
+│  CLI & TUI Interfaces    │  Web GUI Dashboard       │  Argus Multi-Agent Fleet  │
+│  • deck session / work  │  • 3-Column Dark UI      │  • Mission Note Driven    │
+│  • deck tui (Ink/React) │  • Real-time SSE Sync    │  • Pulse Execution Loop   │
+│  • deck doctor / repair │  • Action Toolkit        │  • Task Auto-Staffing     │
+├──────────────────────────┴──────────────────────────┴───────────────────────────┤
+│                             MCP Server & Engine Core                            │
+│  • Per-Session Token Auth • Policy Matrices (child / default / manager)         │
+│  • Watchdog Health Monitor • Structured Notes & SQLite Tables • Playbook Engine │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                              Harness Adapters Layer                             │
+│       Google Gemini    │   Anthropic Claude   │   OpenAI Codex   │   OpenCode   │
+└────────────────────────┴──────────────────────┴──────────────────┴──────────────┘
+```
+
+---
+
+## 🚀 Key Capabilities
+
+- **Multi-Harness Support**: First-class adapters for **Google Gemini** (`gemini`), **Claude Code** (`claude`), **Codex** (`codex`), and **OpenCode** (`opencode`) with auto-detection, custom config profiles, and dual MCP configuration writing (`.mcp.json` and `.gemini/settings.json`).
+- **Isolated Worktrees**: Branch-isolated Git worktrees preventing file-edit collisions between parallel agents, with post-create lifecycle hooks, status inspection, diff generation, and clean merge checks.
+- **Per-Session MCP Server**: 40 agent tools covering worktrees, notes, tables, messaging, playbooks, integrations, and SSH execution, protected by cryptographic session tokens and security policy matrices.
+- **Argus Multi-Agent Orchestration**: Autonomous fleet manager driven by Markdown Mission notes, staffing child subagents in dedicated worktrees with pulse cadence loops and completion deduplication.
+- **Watchdog Supervision**: Proactively detects hung/stuck sessions, loops, and interactive permission prompts (`[y/N]`), with auto-kill and inspection capabilities.
+- **Structured Project Memory**:
+  - **Markdown Notes**: Versioned notes with FTS5 full-text search, snippet extraction, and disk persistence.
+  - **Typed Tables**: Dynamic SQLite tables with schema definition, idempotency keys, SQL-like queries, and aggregations (`count`, `sum`, `avg`, `min`, `max`).
+- **Playbook Engine**: Declarative YAML workflows with sequential, condition, parallel branches, and built-in templates (`ci-check`, `code-review`, `sync-tasks`).
+- **Integrations**: Read-oriented Jira, GitHub, and Slack integrations with untrusted content framing (`<<<UNTRUSTED_CONTENT>>>`) for prompt-injection mitigation and direct SQLite table syncing.
+- **Dual Interfaces**:
+  - **Interactive Web Dashboard (`deck ui`)**: Three-column dark-mode dashboard with real-time SSE streaming, mission editing, live logs, and a Toolkit generated from the playbooks that resolve on the project. Values the backend does not measure render as an inert dash rather than a placeholder number.
+  - **Terminal TUI Dashboard (`deck tui`)**: Multi-tab Ink/React dashboard for terminal monitoring.
+
+---
+
+## 📦 Installation & Requirements
+
+### Requirements
+- **Node.js**: `v22.5.0` or higher
+- **Git**: `2.30+` installed on system `PATH`
+- **Agent Harnesses** *(optional, at least one recommended)*:
+  - Google Gemini CLI (`gemini`)
+  - Claude Code (`claude`)
+  - OpenAI Codex (`codex`)
+  - OpenCode (`opencode`)
+
+### Install from Source
+```bash
+# Clone the repository
+git clone https://github.com/navaneethbv/flightdeck.git
+cd flightdeck
+
+# Install dependencies
+npm install
+
+# Build TypeScript and static assets
+npm run build
+
+# Link globally for the `deck` CLI command
+npm link
+```
+
+---
+
+## 🏁 Quickstart
+
+### 1. Check Environment & Self-Heal
+```bash
+# Run diagnostics to check git and detected agent harnesses
+deck doctor --fix
+```
+
+### 2. Launch an Agent Session
+```bash
+# Start an interactive session with Gemini (or Claude / Codex / OpenCode)
+deck session start my-feature --harness gemini
+
+# Start a headless background session in a new isolated worktree
+deck session start bugfix-123 --harness gemini --worktree-new bugfix-branch --headless --task "Fix memory leak in parser"
+```
+
+### 3. Launch the web dashboard
+```bash
+# Opens the real-time 3-column dashboard in your default browser at http://127.0.0.1:4173
+deck ui
+```
+
+### 4. Initialize an Autonomous Argus Mission
+```bash
+# Scaffold a structured Mission note using a template
+deck argus init vector-search --template feature --title "Implement Vector Search"
+
+# Start the Argus fleet manager loop in the foreground
+deck argus start --name vector-search --mission vector-search-mission --pulse 30s --children 4
+```
+
+---
+
+## 📖 CLI Command Reference
+
+### Sessions & Worktrees
+| Command | Description |
+| :--- | :--- |
+| `deck session start [name] [options]` | Start interactive or headless agent session (`--harness <gemini\|claude\|codex\|opencode>`, `--worktree <name>`, `--worktree-new <name>`, `--headless`, `--task <prompt>`) |
+| `deck session list [--json]` | List all tracked sessions with statuses and worktree bindings |
+| `deck session stop <id>` | Gracefully terminate a session process tree |
+| `deck session restart <id>` | Restart an existing session |
+| `deck session logs <id> [--tail <n>]` | View output logs from a session |
+| `deck session follow <id>` | Stream logs in real-time (*Spectator Mode*) |
+| `deck session export <id> [--out <file>]` | Export complete session bundle (status, logs, diffs, notes, messages) |
+| `deck worktree create <name>` | Create an isolated Git worktree and run post-create hooks |
+| `deck worktree list [--json]` | List all active worktrees and branches |
+| `deck worktree status <name>` | Inspect modified files, untracked files, and commits ahead/behind |
+| `deck worktree diff <name> [--base <branch>]` | Compute full git diff against base branch |
+| `deck worktree merge <name> [--dry-run]` | Merge completed worktree branch back into main |
+| `deck worktree remove <name>` | Remove a Git worktree |
+
+### Argus Multi-Agent Orchestrator
+| Command | Description |
+| :--- | :--- |
+| `deck argus init <name> [options]` | Scaffold a Mission note (`--template <feature\|refactor\|audit\|bugfix>`, `--title <title>`) |
+| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`) |
+| `deck argus status [id] [--json]` | View fleet hierarchy, active children, and pulse progress |
+| `deck argus stop <id>` | Stop an Argus fleet and terminate all child subagents |
+
+### Watchdog Supervisor
+| Command | Description |
+| :--- | :--- |
+| `deck watchdog list [--timeout <sec>]` | List hung or inactive sessions exceeding threshold |
+| `deck watchdog inspect <id>` | Inspect session health, recent logs, and waiting interactive prompts (`[y/N]`) |
+| `deck watchdog kill-hung [--timeout <sec>]` | Stop all frozen/hung agent sessions |
+
+### Structured Memory (Notes & Tables)
+| Command | Description |
+| :--- | :--- |
+| `deck note create <title> <body>` | Create a versioned Markdown note |
+| `deck note read <id>` | Read latest note content |
+| `deck note update <id> [options]` | Update note title or body (increments version) |
+| `deck note search <query>` | Full-text search with context snippet extraction |
+| `deck note list` / `deck note delete <id>` | List or delete notes |
+| `deck table create <name> --cols <def> [--key <col>]` | Create typed SQLite table |
+| `deck table insert <name> --data <json>` | Insert row into table |
+| `deck table query <name> [--where <expr>]` | Query table rows with filters |
+| `deck table aggregate <name> --fn <count\|sum\|avg\|min\|max>` | Perform aggregate calculations |
+| `deck table list` / `deck table drop <name>` | List or drop project tables |
+
+### Playbooks & Automation
+| Command | Description |
+| :--- | :--- |
+| `deck playbook list` | List available project and built-in playbooks (`ci-check`, `code-review`, `sync-tasks`) |
+| `deck playbook run <name> [--input <json>]` | Execute a playbook workflow |
+| `deck playbook save <name> <file.yml>` | Save a playbook from a YAML file |
+
+### Integrations & Tools
+| Command | Description |
+| :--- | :--- |
+| `deck integration auth <jira\|github\|slack>` | Securely store integration credentials in Keychain |
+| `deck integration sync <jira\|github\|slack>` | Sync external issues/PRs/messages into typed tables |
+| `deck integration status` / `deck integration deauth <kind>` | Inspect or revoke integration credentials |
+| `deck ssh add <name> --host <host>` / `deck ssh run <name> <cmd>` | Manage saved SSH hosts and remote commands |
+| `deck message send --to <id> <body>` / `deck message poll` | Inter-agent mailbox messaging |
+
+### User Interfaces & Diagnostics
+| Command | Description |
+| :--- | :--- |
+| `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane |
+| `deck tui` | Open the interactive 3-tab terminal dashboard |
+| `deck doctor [--fix]` | Run environment diagnostics and repair state issues |
+| `deck repair` | Self-heal project directories, dead sessions, and worktree references |
+| `deck config set-default-harness <harness>` | Set global default harness (`gemini`, `claude`, `codex`, `opencode`) |
+| `deck config set-profile-dir <harness> <dir>` | Set custom profile/config directory |
+
+---
+
+## 🛠 MCP Server Tools Reference
+
+When spawned by `deck`, each coding agent harness connects to `deck mcp serve --session <id> --token <token>` over stdio.
+
+### Available MCP Tool Families:
+- **Sessions & Worktrees**: `create_session`, `list_sessions`, `get_session`, `list_worktrees`, `create_worktree`, `remove_worktree`, `worktree_status`, `worktree_diff`, `worktree_merge`, `session_status`, `session_logs`, `session_export`.
+- **Project Notes**: `note_create`, `note_read`, `note_update`, `note_search`, `note_list`, `note_delete`.
+- **Structured Tables**: `table_create`, `table_insert`, `table_query`, `table_update`, `table_aggregate`, `table_list`, `table_drop`.
+- **Inter-Agent Mailbox**: `message_send`, `message_poll`, `message_list`.
+- **Argus & Watchdog**: `argus_init_mission`, `watchdog_status`, `watchdog_inspect`, `project_repair`.
+- **Playbooks & Execution**: `playbook_list`, `playbook_run`, `playbook_save`, `ssh_host_add`, `ssh_list_hosts`, `ssh_host_remove`, `ssh_run`.
+- **Integrations**: `list_jira_issues`, `search_jira_issues`, `list_github_prs`, `get_github_pr`, `list_slack_messages`, `refresh_integration`, `sync_integration_to_table`.
+
+---
+
+## 🧪 Testing & Validation
+
+Flightdeck maintains a comprehensive test suite across unit, integration, and end-to-end tiers:
+
+```bash
+# Run TypeScript compilation check
+npm run typecheck
+
+# Run ESLint validation
+npm run lint
+
+# Run all Vitest suites (14 suites, 50 tests)
+npm test
+```
+
+---
+
+## 📄 License
+
+Not yet licensed. Add a `LICENSE` file before distributing.

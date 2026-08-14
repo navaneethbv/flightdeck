@@ -19,3 +19,6 @@ docs/*.pdf
 test/fixtures/**/worktrees/
 test/fixtures/**/notes/
 test/fixtures/**/state.db*
+
+# Playwright MCP scratch output
+.playwright-mcp/

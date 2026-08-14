@@ -30,6 +30,16 @@ const MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+/**
+ * The session row carries the secret token that gates this session's MCP
+ * server, and the Argus row carries the manager capability. Neither may cross
+ * into the browser: together they are the whole isolation model.
+ */
+function publicSession(session: Session): Omit<Session, 'token'> {
+  const { token: _token, ...rest } = session;
+  return rest;
+}
+
 export interface WebServerOptions {
   port?: number;
   projectRoot?: string;
@@ -73,11 +83,12 @@ export function createWebServer(opts: WebServerOptions = {}): {
     const fleets: Record<string, unknown>[] = [];
     for (const a of argusList) {
       const f = argusManager.fleet(a.id);
+      const { cap: _cap, ...fleet } = a;
       fleets.push({
-        ...a,
+        ...fleet,
         children: f.children.map((c) => ({
           ...c,
-          session: c.session,
+          session: c.session ? publicSession(c.session) : c.session,
         })),
         recentProgress: f.recentProgress,
       });
@@ -106,7 +117,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     return {
       projectRoot,
       projectName: path.basename(projectRoot),
-      sessions: sm.list(),
+      sessions: sm.list().map(publicSession),
       argus: fleets,
       notes: notesStore.list(),
       tables: tablesStore.listTables(),
@@ -241,7 +252,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
           waitForExit: false,
         });
         broadcastUpdate();
-        sendJson(res, 200, started);
+        sendJson(res, 200, publicSession(started));
       } catch (err) {
         sendError(res, 400, (err as Error).message);
       }
