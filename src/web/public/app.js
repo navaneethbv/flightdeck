@@ -7,6 +7,38 @@
 
 const NO_VALUE = '-';
 
+let capabilityToken = '';
+let pendingConfirmResolve = null;
+let actedConfirmId = null;
+
+/**
+ * The capability token is minted per server session and printed with the URL.
+ * It rides the URL fragment, which is never sent to the server, so the client
+ * reads it here and presents it on every /api/* call.
+ */
+function readCapabilityToken() {
+  const m = /[#&]token=([^&]+)/.exec(window.location.href);
+  capabilityToken = m ? decodeURIComponent(m[1]) : '';
+}
+
+/** Headers for /api/* calls: the token rides the X-Flightdeck-Token header. */
+function authedHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (capabilityToken) headers['X-Flightdeck-Token'] = capabilityToken;
+  return headers;
+}
+
+/** /api/events is the one endpoint that reads the token from the query string. */
+function eventsUrl() {
+  const url = '/api/events';
+  if (!capabilityToken) return url;
+  return `${url}?token=${encodeURIComponent(capabilityToken)}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 let state = {
   projectRoot: '',
   projectName: '',
@@ -64,7 +96,7 @@ function relativeTime(ms) {
 
 async function fetchState() {
   try {
-    const res = await fetch('/api/state');
+    const res = await fetch('/api/state', { headers: authedHeaders() });
     if (!res.ok) {
       showError(`state request failed: ${res.status}`);
       return;
@@ -94,7 +126,7 @@ function responseError(payload, res) {
 }
 
 function initSSE() {
-  const evt = new EventSource('/api/events');
+  const evt = new EventSource(eventsUrl());
   evt.onmessage = (e) => {
     try {
       if (JSON.parse(e.data).type === 'update') fetchState();
@@ -338,6 +370,17 @@ function renderToolkit() {
   }
 }
 
+/** A toolkit run that reached a success state. */
+function toolkitSuccess(btn) {
+  btn.innerHTML = `<span class="play-icon ok">✓</span> Done`;
+}
+
+/** A toolkit run that errored: rendered as a visible error, never as success. */
+function toolkitFailure(btn, message) {
+  btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
+  showError(message);
+}
+
 async function runToolkitAction(btn, name) {
   const original = btn.innerHTML;
   btn.disabled = true;
@@ -345,25 +388,113 @@ async function runToolkitAction(btn, name) {
   try {
     const res = await fetch('/api/toolkit/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authedHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ action: name }),
     });
     const payload = await res.json().catch(() => ({}));
-    if (res.ok) {
-      btn.innerHTML = `<span class="play-icon ok">✓</span> Done`;
+    if (!res.ok) {
+      toolkitFailure(btn, `playbook "${name}" failed: ${responseError(payload, res)}`);
+      return;
+    }
+    const outcome = await pollToolkitRun(payload.runId);
+    if (outcome.ok) {
+      toolkitSuccess(btn);
     } else {
-      btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
-      showError(`playbook "${name}" failed: ${responseError(payload, res)}`);
+      toolkitFailure(btn, `playbook "${name}" failed: ${outcome.error}`);
     }
   } catch (err) {
-    btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
-    showError(`playbook "${name}" failed: ${err.message}`);
+    toolkitFailure(btn, `playbook "${name}" failed: ${err.message}`);
   } finally {
     setTimeout(() => {
       btn.innerHTML = original;
       btn.disabled = false;
     }, 2500);
   }
+}
+
+/**
+ * Follow a toolkit run to a terminal state. A run that is awaiting a
+ * confirmation suspends here and resumes only after the user decides in the
+ * confirmation modal.
+ */
+async function pollToolkitRun(runId) {
+  for (;;) {
+    const res = await fetch(`/api/toolkit/run/${encodeURIComponent(runId)}`, {
+      headers: authedHeaders(),
+    });
+    const run = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: responseError(run, res) };
+    if (run.status === 'succeeded') return { ok: true };
+    if (run.status === 'failed') return { ok: false, error: run.error || 'run failed' };
+    if (
+      run.status === 'awaiting_confirmation' &&
+      run.confirm &&
+      run.confirm.id &&
+      run.confirm.id !== actedConfirmId
+    ) {
+      actedConfirmId = run.confirm.id;
+      const approved = await requestConfirm(run.confirm.prompt || 'Approve this action?');
+      await confirmDecision(run.confirm.id, run.confirm.operation, approved);
+      continue;
+    }
+    await sleep(400);
+  }
+}
+
+function ensureConfirmModal() {
+  if (el('modal-confirm')) return;
+  const div = document.createElement('div');
+  div.id = 'modal-confirm';
+  div.className = 'modal-backdrop hidden';
+  div.innerHTML = `
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>Confirm action</h3>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-prompt" id="confirm-prompt"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action" id="btn-deny-confirm">Deny</button>
+        <button class="btn-action primary" id="btn-approve-confirm">Approve</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+  el('btn-approve-confirm').addEventListener('click', () => {
+    el('modal-confirm').classList.add('hidden');
+    if (pendingConfirmResolve) {
+      const resolve = pendingConfirmResolve;
+      pendingConfirmResolve = null;
+      resolve(true);
+    }
+  });
+  el('btn-deny-confirm').addEventListener('click', () => {
+    el('modal-confirm').classList.add('hidden');
+    if (pendingConfirmResolve) {
+      const resolve = pendingConfirmResolve;
+      pendingConfirmResolve = null;
+      resolve(false);
+    }
+  });
+}
+
+/** Show the confirmation modal and wait for the human's decision. */
+function requestConfirm(prompt) {
+  ensureConfirmModal();
+  el('confirm-prompt').textContent = prompt;
+  el('modal-confirm').classList.remove('hidden');
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+  });
+}
+
+/** Post a decision for a pending confirmation bound to its operation. */
+async function confirmDecision(confirmId, operation, ok) {
+  await fetch('/api/toolkit/confirm', {
+    method: 'POST',
+    headers: authedHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ confirmId, operation, ok }),
+  });
 }
 
 function renderReplyTargets() {
@@ -396,7 +527,7 @@ async function loadLogs(id) {
   const term = el('logs-terminal-view');
   if (!term) return;
   try {
-    const res = await fetch(`/api/sessions/${id}/logs`);
+    const res = await fetch(`/api/sessions/${id}/logs`, { headers: authedHeaders() });
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
       term.textContent = `Could not read logs: ${responseError(payload, res)}`;
@@ -447,7 +578,7 @@ function setupEventHandlers() {
     try {
       const res = await fetch('/api/messages/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authedHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           toSession: el('reply-target')?.value || null,
           body,
@@ -482,7 +613,7 @@ function setupEventHandlers() {
     try {
       const res = await fetch('/api/sessions/start', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authedHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           name,
           harness: el('new-session-harness')?.value || state.defaultHarness,
@@ -518,6 +649,7 @@ function setupEventHandlers() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  readCapabilityToken();
   setupEventHandlers();
   fetchState();
   initSSE();

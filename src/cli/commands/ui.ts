@@ -24,11 +24,14 @@ export function registerUi(program: Command): void {
         });
 
         const actualPort = await webServer.start();
-        const url = `http://127.0.0.1:${actualPort}`;
+        // The capability token travels in the URL fragment, which is never sent
+        // to the server; the client reads it to authorize every /api/* call.
+        const url = `http://127.0.0.1:${actualPort}/#token=${webServer.capabilityToken}`;
 
         process.stdout.write(`\n⚡ Flightdeck Control Plane Dashboard\n`);
         process.stdout.write(`   Project: ${projectRoot}\n`);
-        process.stdout.write(`   URL:     ${url}\n\n`);
+        process.stdout.write(`   URL:     ${url}\n`);
+        process.stdout.write(`   Capability token: ${webServer.capabilityToken}\n\n`);
         process.stdout.write(`   Press Ctrl+C to stop the web server.\n\n`);
 
         if (opts.open !== false) {

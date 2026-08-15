@@ -2,6 +2,7 @@ import http, { IncomingMessage, ServerResponse, Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID, createHash } from 'node:crypto';
 import { normalizeProjectRoot, playbooksDir, globalPlaybooksDir } from '../core/paths.js';
 import { SessionManager } from '../sessions/manager.js';
 import { ArgusManager } from '../argus/manager.js';
@@ -12,13 +13,20 @@ import { WatchdogManager } from '../watchdog/manager.js';
 import { listWorktrees } from '../worktrees/manager.js';
 import { BUILTIN_PLAYBOOKS } from '../playbooks/templates.js';
 import { parsePlaybookYaml } from '../playbooks/parser.js';
-import { PlaybookEngine, type EngineServices } from '../playbooks/engine.js';
+import { PlaybookEngine, type EngineServices, type RunResult } from '../playbooks/engine.js';
+import type { Playbook } from '../playbooks/types.js';
 import { ToolRegistry, type McpContext } from '../mcp/tools.js';
 import { isHarnessKind } from '../core/types.js';
 import { getDefaultHarness } from '../core/config.js';
 import { getAdapter } from '../sessions/harness.js';
 import { spawnSync } from 'node:child_process';
 import type { Session } from '../core/types.js';
+
+/**
+ * How long a dashboard confirmation prompt stays open before the run fails
+ * closed (the pending confirmation resolves as denied). Overridable in tests.
+ */
+const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -44,12 +52,33 @@ export interface WebServerOptions {
   port?: number;
   projectRoot?: string;
   staticDir?: string;
+  /** How long a confirmation prompt stays open before it resolves as denied. */
+  confirmTimeoutMs?: number;
+}
+
+interface PendingConfirmation {
+  prompt: string;
+  /** The exact operation this challenge was issued for; a confirm must match it. */
+  operation: string;
+  timer: NodeJS.Timeout;
+  resolve: (approved: boolean) => void;
+}
+
+interface PendingRun {
+  id: string;
+  status: 'running' | 'succeeded' | 'failed' | 'awaiting_confirmation';
+  result?: RunResult;
+  error?: string;
+  confirmId?: string;
+  confirmPrompt?: string;
+  confirmOperation?: string;
 }
 
 export function createWebServer(opts: WebServerOptions = {}): {
   server: Server;
   start: () => Promise<number>;
   stop: () => Promise<void>;
+  capabilityToken: string;
 } {
   const projectRoot = normalizeProjectRoot(opts.projectRoot ?? process.cwd());
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -59,6 +88,62 @@ export function createWebServer(opts: WebServerOptions = {}): {
     opts.staticDir ?? (fs.existsSync(distDir) ? distDir : fs.existsSync(srcDir) ? srcDir : path.resolve(process.cwd(), 'src', 'web', 'public'));
 
   const sseClients = new Set<ServerResponse>();
+
+  // Session-scoped capability token. Every /api/* request must present it;
+  // static assets are served without it so the page can load and read the
+  // token from the URL fragment. It is printed with the URL at startup.
+  const capabilityToken = randomUUID();
+  const pendingRuns = new Map<string, PendingRun>();
+  const pendingConfirms = new Map<string, PendingConfirmation>();
+  const confirmTimeoutMs = opts.confirmTimeoutMs ?? CONFIRM_TIMEOUT_MS;
+
+  /**
+   * The token travels in the X-Flightdeck-Token header on every /api/* call.
+   * The one exception is /api/events, where EventSource cannot set headers, so
+   * the token rides the query string there and only there. The query string
+   * must never be written to a request log.
+   */
+  function isAuthorized(req: IncomingMessage, pathname: string): boolean {
+    const header = req.headers['x-flightdeck-token'];
+    if (header === capabilityToken) return true;
+    if (pathname === '/api/events') {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      return url.searchParams.get('token') === capabilityToken;
+    }
+    return false;
+  }
+
+  /**
+   * A confirm that suspends the run until the browser client posts a decision
+   * for the minted confirm id, bound to the exact operation it was issued for.
+   * A run never auto-confirms: a timeout or a denied request resolves false
+   * and the step fails. Each challenge is single-use and expires.
+   */
+  function makeConfirmRequester(run: PendingRun): (prompt: string, operation: string) => Promise<boolean> {
+    return (prompt: string, operation: string) =>
+      new Promise<boolean>((resolve) => {
+        const confirmId = randomUUID();
+        const timer = setTimeout(() => {
+          pendingConfirms.delete(confirmId);
+          run.status = 'running';
+          run.confirmId = undefined;
+          run.confirmPrompt = undefined;
+          run.confirmOperation = undefined;
+          resolve(false);
+        }, confirmTimeoutMs);
+        pendingConfirms.set(confirmId, { prompt, operation, timer, resolve });
+        run.status = 'awaiting_confirmation';
+        run.confirmId = confirmId;
+        run.confirmPrompt = prompt;
+        run.confirmOperation = operation;
+      });
+  }
+
+  /** Stable identity for a tool invocation, binding a confirm to tool + args. */
+  function operationForTool(tool: string, args: Record<string, unknown>): string {
+    const digest = createHash('sha1').update(JSON.stringify(args ?? {})).digest('hex').slice(0, 12);
+    return `tool:${tool}:${digest}`;
+  }
 
   function broadcastUpdate(): void {
     const data = JSON.stringify({ type: 'update', timestamp: Date.now() });
@@ -131,6 +216,77 @@ export function createWebServer(opts: WebServerOptions = {}): {
     };
   }
 
+  /**
+   * Run a toolkit playbook. This function is the dashboard's only ToolRegistry
+   * choke point: every tool invocation from the dashboard goes through it, so
+   * nothing can reach a tool without clearing the confirmation path below.
+   *
+   * The dashboard is deliberately narrower than an Argus manager session. A
+   * manager whose Argus row grants risky tools auto-passes the permission gate
+   * with no confirmation; the dashboard keeps those tools invocable (the spec
+   * requires destructive and externally-executing tools reachable from the
+   * dashboard to go through a confirmation round trip) but never auto-confirms:
+   * every such tool, and every manual step, suspends the run until a human in
+   * the UI approves or denies the exact pending operation.
+   */
+  async function executeToolkitRun(
+    run: PendingRun,
+    playbook: Playbook,
+    inputs: Record<string, unknown> | undefined
+  ): Promise<void> {
+    const requestConfirm = makeConfirmRequester(run);
+    try {
+      const ctx: McpContext = {
+        projectRoot,
+        sessionId: null,
+        policy: 'default',
+        isManager: true,
+        riskyTools: true,
+        confirm: (prompt) => requestConfirm(prompt, `manual:${prompt}`),
+      };
+      const registry = new ToolRegistry(ctx);
+      const services: EngineServices = {
+        projectRoot,
+        tables: new TablesStore(projectRoot),
+        notes: new NotesStore(projectRoot),
+        messaging: new MessagingStore(projectRoot),
+        callMcpTool: async (tool, args) => {
+          const def = registry.tools.get(tool);
+          if (def && (def.risk === 'destructive' || def.risk === 'external')) {
+            const approved = await requestConfirm(`Run "${tool}"?`, operationForTool(tool, args));
+            if (!approved) throw new Error(`"${tool}" was not approved by the user`);
+          }
+          return registry.call(tool, args);
+        },
+        runHeadlessPrompt: async (prompt) => {
+          const harness = getAdapter(getDefaultHarness());
+          const out = spawnSync(harness.binary, harness.headlessArgs(prompt, {}), {
+            cwd: projectRoot,
+            env: { ...process.env, ...harness.profileEnv({} as Session) },
+            encoding: 'utf8',
+            timeout: 120000,
+          });
+          return { stdout: out.stdout ?? out.stderr ?? '', exitCode: out.status ?? -1 };
+        },
+        readPlaybook: (n) => (n in BUILTIN_PLAYBOOKS ? parsePlaybookYaml(BUILTIN_PLAYBOOKS[n], n) : null),
+        confirm: (prompt) => requestConfirm(prompt, `manual:${prompt}`),
+      };
+      const engine = new PlaybookEngine(services);
+      const result = await engine.run(playbook, { inputs });
+      run.result = result;
+      run.status = result.ok ? 'succeeded' : 'failed';
+      if (!result.ok) run.error = result.error;
+    } catch (err) {
+      run.status = 'failed';
+      run.error = (err as Error).message;
+    } finally {
+      run.confirmId = undefined;
+      run.confirmPrompt = undefined;
+      run.confirmOperation = undefined;
+      broadcastUpdate();
+    }
+  }
+
   async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       let body = '';
@@ -152,7 +308,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': Buffer.byteLength(json),
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Flightdeck-Token',
     });
     res.end(json);
   }
@@ -197,7 +353,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Flightdeck-Token',
       });
       res.end();
       return;
@@ -205,6 +361,13 @@ export function createWebServer(opts: WebServerOptions = {}): {
 
     const url = req.url ?? '/';
     const [pathname] = url.split('?');
+
+    // Every /api/* request must present the capability token printed with the
+    // URL at startup. Static assets are unauthenticated so the page can load.
+    if (pathname.startsWith('/api/') && !isAuthorized(req, pathname)) {
+      sendError(res, 401, 'missing or invalid capability token');
+      return;
+    }
 
     // 1. SSE Events Stream
     if (pathname === '/api/events' && req.method === 'GET') {
@@ -378,6 +541,9 @@ export function createWebServer(opts: WebServerOptions = {}): {
     }
 
     // 7. Toolkit / Playbook Execution
+    // A run is started in the background and its lifecycle is polled, so a
+    // destructive or externally-executing tool can suspend it on a
+    // confirmation round trip instead of being auto-approved.
     if (pathname === '/api/toolkit/run' && req.method === 'POST') {
       try {
         const body = await parseBody(req);
@@ -395,41 +561,55 @@ export function createWebServer(opts: WebServerOptions = {}): {
         if (!playbookYaml) throw new Error(`playbook "${name}" not found`);
 
         const playbook = parsePlaybookYaml(playbookYaml, name);
-        const ctx: McpContext = {
-          projectRoot,
-          sessionId: null,
-          policy: 'default',
-          isManager: true,
-          riskyTools: true,
-          confirm: async () => true,
-        };
-        const registry = new ToolRegistry(ctx);
-        const services: EngineServices = {
-          projectRoot,
-          tables: new TablesStore(projectRoot),
-          notes: new NotesStore(projectRoot),
-          messaging: new MessagingStore(projectRoot),
-          callMcpTool: async (tool, args) => registry.call(tool, args),
-          runHeadlessPrompt: async (prompt) => {
-            const harness = getAdapter(getDefaultHarness());
-            const out = spawnSync(harness.binary, harness.headlessArgs(prompt, {}), {
-              cwd: projectRoot,
-              env: { ...process.env, ...harness.profileEnv({} as Session) },
-              encoding: 'utf8',
-              timeout: 120000,
-            });
-            return { stdout: out.stdout ?? out.stderr ?? '', exitCode: out.status ?? -1 };
-          },
-          readPlaybook: (n) =>
-            n in BUILTIN_PLAYBOOKS ? parsePlaybookYaml(BUILTIN_PLAYBOOKS[n], n) : null,
-          confirm: async () => true,
-        };
-        const engine = new PlaybookEngine(services);
-        const result = await engine.run(playbook, {
-          inputs: (body.inputs as Record<string, unknown>) ?? undefined,
-        });
-        broadcastUpdate();
-        sendJson(res, 200, result);
+        const runId = randomUUID();
+        const run: PendingRun = { id: runId, status: 'running' };
+        pendingRuns.set(runId, run);
+        void executeToolkitRun(run, playbook, (body.inputs as Record<string, unknown>) ?? undefined);
+        sendJson(res, 202, { runId, status: 'running' });
+      } catch (err) {
+        sendError(res, 400, (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathname.startsWith('/api/toolkit/run/') && req.method === 'GET') {
+      const runId = decodeURIComponent(pathname.slice('/api/toolkit/run/'.length));
+      const run = pendingRuns.get(runId);
+      if (!run) {
+        sendError(res, 404, `toolkit run "${runId}" not found`);
+        return;
+      }
+      sendJson(res, 200, {
+        runId,
+        status: run.status,
+        result: run.result,
+        error: run.error,
+        confirm: run.confirmId
+          ? { id: run.confirmId, prompt: run.confirmPrompt, operation: run.confirmOperation }
+          : undefined,
+      });
+      return;
+    }
+
+    if (pathname === '/api/toolkit/confirm' && req.method === 'POST') {
+      try {
+        const body = await parseBody(req);
+        const confirmId = String(body.confirmId ?? '');
+        const operation = String(body.operation ?? '');
+        const pending = pendingConfirms.get(confirmId);
+        if (!pending) {
+          sendError(res, 404, `no pending confirmation "${confirmId}"`);
+          return;
+        }
+        if (pending.operation !== operation) {
+          sendError(res, 400, 'confirmation does not match the pending operation');
+          return;
+        }
+        clearTimeout(pending.timer);
+        pendingConfirms.delete(confirmId);
+        const approved = body.ok === true;
+        pending.resolve(approved);
+        sendJson(res, 200, { confirmed: approved });
       } catch (err) {
         sendError(res, 400, (err as Error).message);
       }
@@ -464,5 +644,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
         sseClients.clear();
         server.close(() => resolve());
       }),
+    capabilityToken,
   };
 }
