@@ -150,7 +150,7 @@ function applyAttrs(node: ShimNode, part: string): void {
   }
 }
 
-const OPEN_TAG_RE = /^<([a-zA-Z][\w-]*)((?:\s+[\w-]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?)*)\s*(\/?)>$/;
+const OPEN_TAG_RE = /^<([a-zA-Z][\w-]*)((?:\s+[^<>]*?)?)\s*(\/?)>$/;
 
 /**
  * Index of the close tag matching the open tag that begins at `start`, or -1.
