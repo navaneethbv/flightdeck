@@ -120,8 +120,22 @@ export class PlaybookEngine {
     return { status: 'failed', output: null, error: lastError };
   }
 
+  private validateBashCommand(command: string): string | null {
+    // Disallow shell control operators and command-substitution constructs that enable injection chaining.
+    // Keep behavior simple and predictable for single-command execution.
+    const unsafePattern = /[;&|`<>]|\$\(|\n|\r/;
+    if (unsafePattern.test(command)) {
+      return 'bash command contains disallowed shell control characters';
+    }
+    return null;
+  }
+
   private execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown): StepResult {
     const command = String(t(step.command));
+    const validationError = this.validateBashCommand(command);
+    if (validationError) {
+      return { status: 'failed', output: null, error: validationError };
+    }
     const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
     const out = spawnSync('/bin/bash', ['-c', command], {
       cwd,
