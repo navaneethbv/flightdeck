@@ -18,21 +18,23 @@ jobs:
     name: sonarcloud
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Sonar needs full history to attribute issues to the correct commit
           # and to compute its "new code" period.
           fetch-depth: 0
 
+      # v8, not v5: versions >=4.0.0 <6.0.0 carry GHSA-5xq9-5g24-4g6f, a
+      # high-severity argument injection flaw. dependency-review blocks them.
       - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
       # Blocks the PR on SonarCloud's quality gate rather than only reporting.
       - name: Enforce SonarQube quality gate
-        uses: SonarSource/sonarqube-quality-gate-action@v1
+        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa # v1.2.1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
