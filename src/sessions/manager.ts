@@ -180,7 +180,7 @@ export class SessionManager {
             // ignore
           }
         });
-        child.on('exit', () => {
+        child.on('close', () => {
           try {
             const text = collector.flush();
             if (text) logStream?.write(text);
@@ -193,7 +193,7 @@ export class SessionManager {
       }
     }
 
-    const finish = (code: number | null, signal: string | null): void => {
+    const finish = async (code: number | null, signal: string | null): Promise<void> => {
       running.delete(id);
       try {
         const dbNow = getDb(this.projectRoot);
@@ -205,7 +205,9 @@ export class SessionManager {
       }
       if (logStream) {
         try {
-          logStream.end();
+          await new Promise<void>((resolve) => {
+            logStream!.end(() => resolve());
+          });
         } catch {
           // ignore
         }
@@ -217,25 +219,25 @@ export class SessionManager {
     if (opts.headless) {
       if (opts.waitForExit) {
         const exitCode = await new Promise<number | null>((resolve) => {
-          child.on('exit', (code) => resolve(code));
+          child.on('close', (code) => resolve(code));
           child.on('error', (err) => {
             log.error(`session ${session.id} spawn error: ${err.message}`);
             resolve(null);
           });
         });
-        finish(exitCode, null);
+        await finish(exitCode, null);
       } else {
-        child.on('exit', (code, signal) => finish(code, signal));
+        child.on('close', (code, signal) => void finish(code, signal));
         child.on('error', (err) => {
           log.error(`session ${session.id} spawn error: ${err.message}`);
-          finish(null, null);
+          void finish(null, null);
         });
       }
     } else {
-      child.on('exit', (code, signal) => finish(code, signal));
+      child.on('close', (code, signal) => void finish(code, signal));
       child.on('error', (err) => {
         log.error(`session ${session.id} spawn error: ${err.message}`);
-        finish(null, null);
+        void finish(null, null);
       });
     }
 
