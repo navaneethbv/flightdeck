@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint
 
   typecheck:
@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run typecheck
 
   build:
@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       # Web assets are copied, not bundled. If copy-assets.js misses a file the
       # dashboard 404s at runtime instead of failing the build, so assert here.
@@ -63,7 +63,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       # `pretest` builds first; integration and e2e specs spawn dist/cli/index.js
       # as a real child process, so a stale dist would test the previous build.
       - run: npm test

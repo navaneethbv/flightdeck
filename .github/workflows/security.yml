@@ -20,15 +20,17 @@ jobs:
     name: dependency-review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # Deliberately read-only, and no comment-summary-in-pr. Dependabot's PRs run
+    # with a read-only GITHUB_TOKEN, so a PR-comment step would fail there, and
+    # this is a required check: that would deadlock every Dependabot PR.
+    # Findings still surface as job annotations.
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
-          comment-summary-in-pr: on-failure
 
   # Catches advisories against dependencies that are already in the lockfile,
   # which dependency-review does not look at because they are not part of the diff.
@@ -41,7 +43,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
 
   # This repo generates per-session harness configs (.mcp.json, opencode.json,
