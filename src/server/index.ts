@@ -63,6 +63,21 @@ function publicSession(session: Session): Omit<Session, 'token'> {
   return rest;
 }
 
+async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 export interface WebServerOptions {
   port?: number;
   projectRoot?: string;
@@ -306,21 +321,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
     }
   }
 
-  async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      let body = '';
-      req.on('data', (chunk) => (body += chunk));
-      req.on('end', () => {
-        try {
-          resolve(body ? JSON.parse(body) : {});
-        } catch (err) {
-          reject(err);
-        }
-      });
-      req.on('error', reject);
-    });
-  }
-
   function sendJson(res: ServerResponse, status: number, data: unknown): void {
     const json = JSON.stringify(data);
     res.writeHead(status, {
@@ -335,7 +335,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
   }
 
   function serveStatic(req: IncomingMessage, res: ServerResponse): void {
-    const url = req.url === '/' || !req.url ? '/index.html' : req.url.split('?')[0];
+    const url = !req.url || req.url === '/' ? '/index.html' : req.url.split('?')[0];
     const safePath = path.normalize(url).replace(/^(\.\.[/\\])+/, '');
     const filePath = path.join(staticDir, safePath);
 
@@ -515,7 +515,9 @@ export function createWebServer(opts: WebServerOptions = {}): {
       try {
         const body = await parseBody(req);
         const ns = new NotesStore(projectRoot);
-        const note = ns.createNote(String(body.title), String(body.body ?? ''));
+        const titleStr = typeof body.title === 'string' ? body.title : '';
+        const bodyStr = typeof body.body === 'string' ? body.body : '';
+        const note = ns.createNote(titleStr, bodyStr);
         broadcastUpdate();
         sendJson(res, 200, note);
       } catch (err) {
@@ -529,8 +531,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
         const body = await parseBody(req);
         const ns = new NotesStore(projectRoot);
         const note = ns.updateNote(String(body.id), {
-          title: body.title !== undefined ? String(body.title) : undefined,
-          body: body.body !== undefined ? String(body.body) : undefined,
+          title: typeof body.title === 'string' ? body.title : undefined,
+          body: typeof body.body === 'string' ? body.body : undefined,
         });
         broadcastUpdate();
         sendJson(res, 200, note);

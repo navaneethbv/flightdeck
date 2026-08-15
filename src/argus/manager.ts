@@ -28,13 +28,13 @@ function rowToArgus(row: Record<string, unknown>): Argus {
     id: String(row.id),
     name: String(row.name),
     projectRoot: String(row.project_root),
-    missionNoteId: row.mission_note_id === null ? null : String(row.mission_note_id),
+    missionNoteId: typeof row.mission_note_id === 'string' ? row.mission_note_id : null,
     cap: String(row.cap),
     childLimit: Number(row.child_limit),
     pulseSec: Number(row.pulse_sec),
     riskyTools: Number(row.risky_tools) === 1,
     status: row.status as Argus['status'],
-    managerSessionId: row.manager_session_id === null ? null : String(row.manager_session_id),
+    managerSessionId: typeof row.manager_session_id === 'string' ? row.manager_session_id : null,
     createdAt: Number(row.created_at),
     lastPulseAt: row.last_pulse_at === null ? null : Number(row.last_pulse_at),
   };
@@ -62,10 +62,10 @@ export function parseTasks(missionBody: string): string[] {
 }
 
 export class ArgusManager {
-  private db: DatabaseSync;
-  private sessions: SessionManager;
-  private notes: NotesStore;
-  private tables: TablesStore;
+  private readonly db: DatabaseSync;
+  private readonly sessions: SessionManager;
+  private readonly notes: NotesStore;
+  private readonly tables: TablesStore;
   private readonly projectRoot: string;
   private readonly completedLogged = new Set<string>();
 
@@ -266,7 +266,7 @@ export class ArgusManager {
     if (!argus) throw new Error(`argus "${id}" not found`);
     const children = this.children(argus);
     for (const child of children) {
-      if (child.session && child.session.status === 'running') {
+      if (child.session?.status === 'running') {
         await this.sessions.stopSession(child.session.id);
       }
     }

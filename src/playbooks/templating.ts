@@ -31,31 +31,37 @@ export function resolveTemplate(template: unknown, ctx: TemplateContext): unknow
   return template;
 }
 
+function getRootContext(head: string, ctx: TemplateContext): unknown {
+  switch (head) {
+    case 'inputs':
+      return ctx.inputs;
+    case 'vars':
+      return ctx.vars;
+    case 'secrets':
+      return ctx.secrets;
+    case 'steps':
+      return ctx.steps;
+    default:
+      return undefined;
+  }
+}
+
+function resolvePart(current: unknown, part: string): unknown {
+  if (current === null || typeof current !== 'object') return undefined;
+  const obj = current as Record<string, unknown>;
+  if (part in obj) return obj[part];
+  if (obj.output !== null && typeof obj.output === 'object' && part in (obj.output as Record<string, unknown>)) {
+    return (obj.output as Record<string, unknown>)[part];
+  }
+  return undefined;
+}
+
 function resolvePath(path: string, ctx: TemplateContext): unknown {
   const parts = path.split('.');
-  const head = parts[0];
-  let value: unknown;
-  if (head === 'inputs') value = ctx.inputs;
-  else if (head === 'vars') value = ctx.vars;
-  else if (head === 'secrets') value = ctx.secrets;
-  else if (head === 'steps') value = ctx.steps;
-  else return undefined;
-
+  let value: unknown = getRootContext(parts[0], ctx);
   for (let i = 1; i < parts.length; i++) {
-    const part = parts[i];
-    if (value === null || value === undefined) return undefined;
-    if (typeof value === 'object') {
-      const obj = value as Record<string, unknown>;
-      if (part in obj) {
-        value = obj[part];
-      } else if (obj.output !== null && typeof obj.output === 'object' && part in (obj.output as Record<string, unknown>)) {
-        value = (obj.output as Record<string, unknown>)[part];
-      } else {
-        return undefined;
-      }
-    } else {
-      return undefined;
-    }
+    value = resolvePart(value, parts[i]);
+    if (value === undefined) return undefined;
   }
   return value;
 }

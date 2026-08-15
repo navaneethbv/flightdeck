@@ -65,7 +65,7 @@ function mcpServerArgs(session: Session, extraEnv?: Record<string, string>): { c
     args,
     env: {
       FLIGHTDECK_SESSION_TOKEN: session.token,
-      ...(extraEnv ?? {}),
+      ...extraEnv,
     },
   };
 }

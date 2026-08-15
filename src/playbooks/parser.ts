@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import fs from 'node:fs';
-import type { Playbook, Step, StepResult } from './types.js';
+import type { Playbook, Step } from './types.js';
 
 export function parsePlaybookYaml(raw: string, sourceName = 'playbook'): Playbook {
   let data: unknown;
@@ -21,7 +21,7 @@ export function parsePlaybook(data: unknown, sourceName = 'playbook'): Playbook 
     throw new Error(`invalid playbook "${sourceName}": missing "name"`);
   }
   if (!Array.isArray(doc.steps)) {
-    throw new Error(`invalid playbook "${doc.name}": missing "steps" array`);
+    throw new TypeError(`invalid playbook "${doc.name}": missing "steps" array`);
   }
   const steps = doc.steps.map((s) => parseStep(s, `${doc.name}#step`));
   assertUniqueIds(steps, doc.name);
@@ -67,18 +67,21 @@ function parseStep(raw: unknown, label: string): Step {
       requireString(s, 'command', id);
       return { ...base, type, command: String(s.command), cwd: optString(s.cwd) };
     case 'llm':
+    case 'manual':
       requireString(s, 'prompt', id);
       return { ...base, type, prompt: String(s.prompt) };
-    case 'http':
+    case 'http': {
       requireString(s, 'url', id);
+      const rawMethod = typeof s.method === 'string' ? s.method.toUpperCase() : 'GET';
       return {
         ...base,
         type,
-        method: (String(s.method ?? 'GET').toUpperCase() as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'),
+        method: rawMethod as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
         url: String(s.url),
         headers: optMap(s.headers) as Record<string, string> | undefined,
         body: s.body,
       };
+    }
     case 'mcp':
       requireString(s, 'tool', id);
       return { ...base, type, tool: String(s.tool), arguments: optMap(s.arguments) ?? optMap(s.args) };
@@ -128,9 +131,6 @@ function parseStep(raw: unknown, label: string): Step {
         then: (s.then as unknown[]).map((t) => parseStep(t, `${label}.${id}.then`)),
         else: Array.isArray(s.else) ? (s.else as unknown[]).map((t) => parseStep(t, `${label}.${id}.else`)) : undefined,
       };
-    case 'manual':
-      requireString(s, 'prompt', id);
-      return { ...base, type, prompt: String(s.prompt) };
     case 'parallel':
       if (!Array.isArray(s.branches)) throw new Error(`step "${id}": "branches" must be an array`);
       return {
@@ -189,4 +189,4 @@ export function parsePlaybookFile(filePath: string): Playbook {
   return parsePlaybookYaml(fs.readFileSync(filePath, 'utf8'), filePath);
 }
 
-export { StepResult };
+export type { StepResult } from './types.js';

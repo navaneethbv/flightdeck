@@ -35,14 +35,14 @@ export function rowToSession(row: Record<string, unknown>): Session {
     name: String(row.name),
     harness: row.harness as HarnessKind,
     projectRoot: String(row.project_root),
-    worktree: row.worktree === null ? null : String(row.worktree),
+    worktree: typeof row.worktree === 'string' ? row.worktree : null,
     cwd: String(row.cwd),
     pid: row.pid === null ? null : Number(row.pid),
     status: row.status as Session['status'],
     token: String(row.token),
     policy: row.policy as SessionPolicy,
-    argusParent: row.argus_parent === null ? null : String(row.argus_parent),
-    task: row.task === null || row.task === undefined ? null : String(row.task),
+    argusParent: typeof row.argus_parent === 'string' ? row.argus_parent : null,
+    task: typeof row.task === 'string' ? row.task : null,
     startedAt: Number(row.started_at),
     endedAt: row.ended_at === null ? null : Number(row.ended_at),
     lastActivityAt: Number(row.last_activity_at),
@@ -125,7 +125,7 @@ export class SessionManager {
       ...process.env,
       ...profileEnv,
       ...extraMcpEnv,
-      ...(opts.env ?? {}),
+      ...opts.env,
       FLIGHTDECK_SESSION_ID: session.id,
       FLIGHTDECK_SESSION_TOKEN: session.token,
     };
@@ -248,7 +248,7 @@ export class SessionManager {
     const session = this.get(id);
     if (!session) throw new Error(`session "${id}" not found`);
     const child = running.get(id);
-    if (child && child.pid) {
+    if (child?.pid) {
       if (child.stdout === null) {
         try {
           process.kill(-child.pid, 'SIGTERM');

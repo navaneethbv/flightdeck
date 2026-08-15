@@ -33,9 +33,14 @@ function apiUrl(config: JiraConfig, path: string): string {
   return `https://${domain}/rest/api/${path}`;
 }
 
+function basicAuthHeader(email: string, token: string): string {
+  const credentials = `${email}:${token}`;
+  return `Basic ${Buffer.from(credentials).toString('base64')}`;
+}
+
 export async function verifyJira(config: JiraConfig): Promise<void> {
   const res = await fetch(apiUrl(config, '2/myself'), {
-    headers: { Authorization: `Basic ${Buffer.from(`${config.email}:${config.token}`).toString('base64')}` },
+    headers: { Authorization: basicAuthHeader(config.email, config.token) },
   });
   if (!res.ok) throw new Error(`Jira verification failed: ${res.status}`);
 }
@@ -51,7 +56,7 @@ export async function fetchJiraIssues(
   const jql = opts.jql ?? 'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC';
   const params = new URLSearchParams({ jql, maxResults: String(opts.max ?? 50) });
   const res = await fetch(`${apiUrl(config, '2/search')}?${params}`, {
-    headers: { Authorization: `Basic ${Buffer.from(`${config.email}:${config.token}`).toString('base64')}` },
+    headers: { Authorization: basicAuthHeader(config.email, config.token) },
   });
   if (!res.ok) throw new Error(`Jira search failed: ${res.status}`);
   const data = (await res.json()) as {

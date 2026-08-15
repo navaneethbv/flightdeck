@@ -11,7 +11,7 @@ export interface Message {
 }
 
 export class MessagingStore {
-  private db: DatabaseSync;
+  private readonly db: DatabaseSync;
 
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
@@ -48,7 +48,7 @@ export class MessagingStore {
     const limit = opts.limit ?? 100;
     sql += ` LIMIT ${Math.max(1, Math.floor(limit))}`;
     const rows = this.db.prepare(sql).all(...(params as SQLInputValue[])) as Record<string, unknown>[];
-    return rows.reverse().map(rowToMessage);
+    return rows.toReversed().map(rowToMessage);
   }
 
   poll(to: string, sinceId: number): Message[] {
@@ -69,7 +69,7 @@ function rowToMessage(row: Record<string, unknown>): Message {
   return {
     id: Number(row.id),
     fromSession: String(row.from_session),
-    toSession: row.to_session === null ? null : String(row.to_session),
+    toSession: typeof row.to_session === 'string' ? row.to_session : null,
     body: String(row.body),
     createdAt: Number(row.created_at),
     readAt: row.read_at === null ? null : Number(row.read_at),

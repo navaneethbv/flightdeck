@@ -127,7 +127,13 @@ function renderLogContent(snap: Snapshot): ReactElement {
   return <Text dimColor>{'  (no log output recorded for this session)'}</Text>;
 }
 
-function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
+function getSessionStatusColor(status: string | undefined): 'green' | 'red' | 'yellow' {
+  if (status === 'running') return 'green';
+  if (status === 'failed') return 'red';
+  return 'yellow';
+}
+
+function Dashboard({ projectRoot }: { readonly projectRoot: string }): ReactElement {
   const [snap, refresh, logIndexRef] = useSnapshot(projectRoot);
   const [tab, setTab] = useState<TabName>('sessions');
 
@@ -198,15 +204,7 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
             {snap.sessions.length === 0 && <Text dimColor>{'  (none)'}</Text>}
             {snap.sessions.map((s) => (
               <Text key={s.id}>
-                <Text
-                  color={
-                    s.status === 'running'
-                      ? 'green'
-                      : s.status === 'failed'
-                      ? 'red'
-                      : 'yellow'
-                  }
-                >
+                <Text color={getSessionStatusColor(s.status)}>
                   {'  '}
                   {s.status.padEnd(8)}
                 </Text>
@@ -223,40 +221,35 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
           </Text>
           <Box flexDirection="column" marginBottom={1}>
             {snap.argus.length === 0 && <Text dimColor>{'  (none)'}</Text>}
-            {snap.argus.map((a) => (
-              <Box key={a.id} flexDirection="column">
-                <Text>
-                  <Text color={a.status === 'running' ? 'green' : 'dim'}>
-                    {'  '}
-                    {a.status.padEnd(8)}
-                  </Text>
-                  <Text bold>{a.name}</Text>
-                  <Text dimColor>{`  children ${(snap.children[a.id] ?? []).length}/${a.childLimit}  pulse ${a.pulseSec}s`}</Text>
-                </Text>
-                {(snap.children[a.id] ?? []).map((child) => {
-                  const s = child.session;
-                  return (
-                    <Text key={s?.id ?? child.worktreeName}>
-                      <Text
-                        color={
-                          s?.status === 'running'
-                            ? 'green'
-                            : s?.status === 'failed'
-                            ? 'red'
-                            : 'yellow'
-                        }
-                      >
-                        {'    '}
-                        {s?.status.padEnd(8) ?? 'stopped '}
-                      </Text>
-                      <Text dimColor>
-                        {s ? `${s.name} (${s.harness})` : child.worktreeName}
-                      </Text>
+            {snap.argus.map((a) => {
+              const children = snap.children[a.id] ?? [];
+              return (
+                <Box key={a.id} flexDirection="column">
+                  <Text>
+                    <Text color={a.status === 'running' ? 'green' : 'dim'}>
+                      {'  '}
+                      {a.status.padEnd(8)}
                     </Text>
-                  );
-                })}
-              </Box>
-            ))}
+                    <Text bold>{a.name}</Text>
+                    <Text dimColor>{`  children ${children.length}/${a.childLimit}  pulse ${a.pulseSec}s`}</Text>
+                  </Text>
+                  {children.map((child) => {
+                    const s = child.session;
+                    return (
+                      <Text key={s?.id ?? child.worktreeName}>
+                        <Text color={getSessionStatusColor(s?.status)}>
+                          {'    '}
+                          {s?.status.padEnd(8) ?? 'stopped '}
+                        </Text>
+                        <Text dimColor>
+                          {s ? `${s.name} (${s.harness})` : child.worktreeName}
+                        </Text>
+                      </Text>
+                    );
+                  })}
+                </Box>
+              );
+            })}
           </Box>
 
           <Text bold underline color="white">
@@ -298,7 +291,7 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
             {snap.tables.map((t) => (
               <Text key={t.name}>
                 <Text color="magenta">{`  ${t.name.padEnd(20)} `}</Text>
-                <Text dimColor>{`${t.columns.map((c) => `${c.name}:${c.type}`).join(', ')}`}</Text>
+                <Text dimColor>{t.columns.map((c) => `${c.name}:${c.type}`).join(', ')}</Text>
               </Text>
             ))}
           </Box>

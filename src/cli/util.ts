@@ -21,10 +21,17 @@ export function handleError(err: unknown): never {
   throw err;
 }
 
+const DURATION_MULTIPLIERS: Record<string, number> = {
+  h: 3600,
+  m: 60,
+  s: 1,
+};
+
 export function parseSeconds(value: string): number {
-  const m = value.match(/^(\d+)(s|m|h)?$/);
+  const m = /^(\d+)([smh])?$/.exec(value);
   if (!m) throw new Error(`invalid duration "${value}" (use 30s, 5m, 2h)`);
   const n = Number(m[1]);
   const unit = m[2] ?? 's';
-  return n * (unit === 'h' ? 3600 : unit === 'm' ? 60 : 1);
+  const multiplier = DURATION_MULTIPLIERS[unit] ?? 1;
+  return n * multiplier;
 }

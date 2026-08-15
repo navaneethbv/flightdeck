@@ -202,12 +202,12 @@ body {
 
 .tree-item.active {
   background-color: rgba(59, 130, 246, 0.12);
-  color: #93c5fd;
+  color: #bfdbfe;
 }
 
 .tree-item.active-leaf {
   background-color: rgba(34, 197, 94, 0.14);
-  color: #86efac;
+  color: #bbf7d0;
   font-weight: 600;
 }
 
@@ -303,7 +303,7 @@ body {
 .pill-badge.purple {
   font-size: 10px;
   background: rgba(168, 85, 247, 0.18);
-  color: #c084fc;
+  color: #e9d5ff;
   padding: 2px 6px;
   border-radius: 10px;
   font-weight: 600;
@@ -531,7 +531,7 @@ body {
 .btn-action.primary {
   background: rgba(34, 197, 94, 0.16);
   border-color: rgba(34, 197, 94, 0.4);
-  color: #86efac;
+  color: #bbf7d0;
 }
 
 .btn-action.primary:hover {

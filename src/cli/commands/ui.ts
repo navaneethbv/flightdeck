@@ -5,6 +5,12 @@ import { createWebServer } from '../../server/index.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
+function getOpenCommand(): string {
+  if (process.platform === 'darwin') return 'open';
+  if (process.platform === 'win32') return 'start';
+  return 'xdg-open';
+}
+
 export function registerUi(program: Command): void {
   program
     .command('ui')
@@ -35,7 +41,7 @@ export function registerUi(program: Command): void {
         process.stdout.write(`   Press Ctrl+C to stop the web server.\n\n`);
 
         if (opts.open !== false) {
-          const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+          const openCmd = getOpenCommand();
           exec(`${openCmd} ${url}`);
         }
 

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import type { DatabaseSync } from 'node:sqlite';
 import { getDb, now } from '../core/state.js';
 import { notesDir } from '../core/paths.js';
 
@@ -34,7 +35,7 @@ function slugify(title: string): string {
 }
 
 function parseFile(content: string): { title: string; body: string } {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
   if (!m) return { title: '', body: content };
   try {
     const meta = YAML.parse(m[1]) as { title?: unknown };
@@ -63,7 +64,7 @@ function syncFts(db: unknown, noteId: string, title: string, body: string): void
 }
 
 export class NotesStore {
-  private db;
+  private readonly db: DatabaseSync;
 
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
@@ -161,7 +162,7 @@ export class NotesStore {
         const id = String(r.note_id);
         if (seen.has(id)) continue;
         seen.add(id);
-        const body = String(r.body ?? '');
+        const body = typeof r.body === 'string' ? r.body : '';
         const lowerBody = body.toLowerCase();
         const firstTerm = safeQuery.toLowerCase().split(/\s+/)[0] ?? '';
         const idx = lowerBody.indexOf(firstTerm);

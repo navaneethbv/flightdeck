@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { projectRootOf, requireGitProject, printJson, handleError, parseSeconds } from '../util.js';
+import { projectRootOf, requireGitProject, printJson, handleError } from '../util.js';
 import { SessionManager } from '../../sessions/manager.js';
 import { getAdapter } from '../../sessions/harness.js';
 import { isHarnessKind } from '../../core/types.js';
@@ -144,7 +144,12 @@ export function registerSession(program: Command): void {
       try {
         const manager = new SessionManager(projectRootOf(opts.project as string | undefined));
         const logs = manager.getLogs(id, Number.parseInt(String(opts.tail), 10) || 100);
-        process.stdout.write(logs ? logs + (logs.endsWith('\n') ? '' : '\n') : 'no logs found\n');
+        if (logs) {
+          const suffix = logs.endsWith('\n') ? '' : '\n';
+          process.stdout.write(logs + suffix);
+        } else {
+          process.stdout.write('no logs found\n');
+        }
       } catch (err) {
         handleError(err);
       }
@@ -314,4 +319,4 @@ export function sessionToJson(session: Session): Session {
   return session;
 }
 
-export { parseSeconds };
+export { parseSeconds } from '../util.js';

@@ -120,6 +120,122 @@ export class PlaybookEngine {
     return { status: 'failed', output: null, error: lastError };
   }
 
+  private execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown): StepResult {
+    const command = String(t(step.command));
+    const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
+    const out = spawnSync('/bin/bash', ['-c', command], {
+      cwd,
+      encoding: 'utf8',
+      timeout: step.timeout !== undefined ? step.timeout * 1000 : undefined,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const output = { stdout: out.stdout ?? '', stderr: out.stderr ?? '', exitCode: out.status };
+    return out.status === 0
+      ? { status: 'ok', output }
+      : { status: 'failed', output, error: `bash exited ${out.status}: ${(out.stderr ?? '').trim()}` };
+  }
+
+  private async execLlm(step: Extract<Step, { type: 'llm' }>, t: (v: unknown) => unknown): Promise<StepResult> {
+    const prompt = String(t(step.prompt));
+    const { stdout, exitCode } = await this.services.runHeadlessPrompt(prompt);
+    return exitCode === 0
+      ? { status: 'ok', output: { stdout } }
+      : { status: 'failed', output: { stdout }, error: `llm exited ${exitCode}` };
+  }
+
+  private async execHttp(
+    step: Extract<Step, { type: 'http' }>,
+    t: (v: unknown) => unknown,
+    tl: (v: unknown) => unknown
+  ): Promise<StepResult> {
+    const url = String(t(step.url));
+    const headers = (tl(step.headers) as Record<string, string> | undefined) ?? undefined;
+    const body = step.body === undefined ? undefined : tl(step.body);
+    let reqBody: string | undefined;
+    if (typeof body === 'string') {
+      reqBody = body;
+    } else if (body !== undefined) {
+      reqBody = JSON.stringify(body);
+    }
+    const res = await fetch(url, {
+      method: step.method,
+      headers,
+      body: reqBody,
+    });
+    const text = await res.text();
+    const output = { status: res.status, body: text, headers: Object.fromEntries(res.headers) };
+    return res.ok
+      ? { status: 'ok', output }
+      : { status: 'failed', output, error: `http ${res.status} from ${url}` };
+  }
+
+  private async execMcp(
+    step: Extract<Step, { type: 'mcp' }>,
+    t: (v: unknown) => unknown,
+    tl: (v: unknown) => unknown
+  ): Promise<StepResult> {
+    const tool = String(t(step.tool));
+    const args = (tl(step.arguments) as Record<string, unknown> | undefined) ?? {};
+    try {
+      const output = await this.services.callMcpTool(tool, args);
+      return { status: 'ok', output };
+    } catch (err) {
+      return { status: 'failed', output: null, error: (err as Error).message };
+    }
+  }
+
+  private execMessage(step: Extract<Step, { type: 'message' }>, t: (v: unknown) => unknown): StepResult {
+    const to = step.to ? String(t(step.to)) : null;
+    const body = String(t(step.body));
+    const output = this.services.messaging.send(this.services.fromSession ?? 'playbook', to, body);
+    return { status: 'ok', output };
+  }
+
+  private async execPlaybookStep(
+    step: Extract<Step, { type: 'playbook' }>,
+    t: (v: unknown) => unknown,
+    tl: (v: unknown) => unknown,
+    depth: number
+  ): Promise<StepResult> {
+    const name = String(t(step.name));
+    const nested = this.services.readPlaybook(name);
+    if (!nested) return { status: 'failed', output: null, error: `playbook "${name}" not found` };
+    const nestedInputs = (tl(step.args) as Record<string, unknown> | undefined) ?? {};
+    const nestedResult = await this.run(nested, { inputs: nestedInputs, depth: depth + 1 });
+    return nestedResult.ok
+      ? { status: 'ok', output: { ok: true, results: nestedResult.results } }
+      : { status: 'failed', output: { ok: false, results: nestedResult.results }, error: nestedResult.error };
+  }
+
+  private async execCondition(
+    step: Extract<Step, { type: 'condition' }>,
+    t: (v: unknown) => unknown,
+    ctx: TemplateContext,
+    results: Record<string, StepResult>,
+    depth: number
+  ): Promise<StepResult> {
+    const raw = String(step.if);
+    const resolved = String(t(raw));
+    const value = evaluateExpression(resolved);
+    const branch = value ? step.then : step.else ?? [];
+    let failed = false;
+    let error: string | undefined;
+    for (const nested of branch) {
+      const result = await this.runStep(nested, ctx, results, depth);
+      results[nested.id] = result;
+      recordStepContext(ctx, nested.id, result);
+      this.onProgress?.(nested.id, result);
+      if (result.status === 'failed') {
+        failed = true;
+        error = result.error;
+        break;
+      }
+    }
+    return failed
+      ? { status: 'failed', output: { branch: value ? 'then' : 'else', condition: value }, error }
+      : { status: 'ok', output: { branch: value ? 'then' : 'else', condition: value } };
+  }
+
   private async exec(
     step: Step,
     ctx: TemplateContext,
@@ -129,99 +245,29 @@ export class PlaybookEngine {
     const t = (v: unknown): unknown => resolveTemplate(v, ctx);
     const tl = (v: unknown): unknown => resolveTemplateLoose(v, ctx);
     switch (step.type) {
-      case 'bash': {
-        const command = String(t(step.command));
-        const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
-        const out = spawnSync('/bin/bash', ['-c', command], {
-          cwd,
-          encoding: 'utf8',
-          timeout: step.timeout !== undefined ? step.timeout * 1000 : undefined,
-          maxBuffer: 10 * 1024 * 1024,
-        });
-        const output = { stdout: out.stdout ?? '', stderr: out.stderr ?? '', exitCode: out.status };
-        return out.status === 0
-          ? { status: 'ok', output }
-          : { status: 'failed', output, error: `bash exited ${out.status}: ${(out.stderr ?? '').trim()}` };
-      }
-      case 'llm': {
-        const prompt = String(t(step.prompt));
-        const { stdout, exitCode } = await this.services.runHeadlessPrompt(prompt);
-        return exitCode === 0
-          ? { status: 'ok', output: { stdout } }
-          : { status: 'failed', output: { stdout }, error: `llm exited ${exitCode}` };
-      }
-      case 'http': {
-        const url = String(t(step.url));
-        const headers = (tl(step.headers) as Record<string, string> | undefined) ?? undefined;
-        const body = step.body === undefined ? undefined : tl(step.body);
-        const res = await fetch(url, {
-          method: step.method,
-          headers,
-          body: typeof body === 'string' ? body : body !== undefined ? JSON.stringify(body) : undefined,
-        });
-        const text = await res.text();
-        const output = { status: res.status, body: text, headers: Object.fromEntries(res.headers) };
-        return res.ok
-          ? { status: 'ok', output }
-          : { status: 'failed', output, error: `http ${res.status} from ${url}` };
-      }
-      case 'mcp': {
-        const tool = String(t(step.tool));
-        const args = (tl(step.arguments) as Record<string, unknown> | undefined) ?? {};
-        try {
-          const output = await this.services.callMcpTool(tool, args);
-          return { status: 'ok', output };
-        } catch (err) {
-          return { status: 'failed', output: null, error: (err as Error).message };
-        }
-      }
+      case 'bash':
+        return this.execBash(step, t);
+      case 'llm':
+        return this.execLlm(step, t);
+      case 'http':
+        return this.execHttp(step, t, tl);
+      case 'mcp':
+        return this.execMcp(step, t, tl);
       case 'data':
         return this.execData(step, tl);
-      case 'message': {
-        const to = step.to ? String(t(step.to)) : null;
-        const body = String(t(step.body));
-        const output = this.services.messaging.send(this.services.fromSession ?? 'playbook', to, body);
-        return { status: 'ok', output };
-      }
+      case 'message':
+        return this.execMessage(step, t);
       case 'note':
         return this.execNote(step, tl);
-      case 'playbook': {
-        const name = String(t(step.name));
-        const nested = this.services.readPlaybook(name);
-        if (!nested) return { status: 'failed', output: null, error: `playbook "${name}" not found` };
-        const nestedInputs = (tl(step.args) as Record<string, unknown> | undefined) ?? {};
-        const nestedResult = await this.run(nested, { inputs: nestedInputs, depth: depth + 1 });
-        return nestedResult.ok
-          ? { status: 'ok', output: { ok: true, results: nestedResult.results } }
-          : { status: 'failed', output: { ok: false, results: nestedResult.results }, error: nestedResult.error };
-      }
+      case 'playbook':
+        return this.execPlaybookStep(step, t, tl, depth);
       case 'wait': {
         const seconds = Number(tl(step.seconds));
         await sleep(seconds * 1000);
         return { status: 'ok', output: { waited: seconds } };
       }
-      case 'condition': {
-        const raw = String(step.if);
-        const resolved = String(t(raw));
-        const value = evaluateExpression(resolved);
-        const branch = value ? step.then : step.else ?? [];
-        let failed = false;
-        let error: string | undefined;
-        for (const nested of branch) {
-          const result = await this.runStep(nested, ctx, results, depth);
-          results[nested.id] = result;
-          recordStepContext(ctx, nested.id, result);
-          this.onProgress?.(nested.id, result);
-          if (result.status === 'failed') {
-            failed = true;
-            error = result.error;
-            break;
-          }
-        }
-        return failed
-          ? { status: 'failed', output: { branch: value ? 'then' : 'else', condition: value }, error }
-          : { status: 'ok', output: { branch: value ? 'then' : 'else', condition: value } };
-      }
+      case 'condition':
+        return this.execCondition(step, t, ctx, results, depth);
       case 'manual': {
         const prompt = String(t(step.prompt));
         const confirmed = await this.services.confirm(prompt);
@@ -282,25 +328,28 @@ export class PlaybookEngine {
 
   private execNote(step: Extract<Step, { type: 'note' }>, tl: (v: unknown) => unknown): StepResult {
     try {
+      const getStr = (val: unknown): string => (typeof val === 'string' ? val : (typeof val === 'number' || typeof val === 'boolean' ? String(val) : ''));
       switch (step.operation) {
         case 'create': {
-          const note = this.services.notes.createNote(String(tl(step.title) ?? ''), String(tl(step.body) ?? ''));
+          const note = this.services.notes.createNote(getStr(tl(step.title)), getStr(tl(step.body)));
           return { status: 'ok', output: note };
         }
         case 'read': {
-          const note = this.services.notes.readNote(String(tl(step.noteId) ?? ''));
-          if (!note) throw new Error(`note "${step.noteId}" not found`);
+          const noteId = getStr(tl(step.noteId));
+          const note = this.services.notes.readNote(noteId);
+          if (!note) throw new Error(`note "${noteId}" not found`);
           return { status: 'ok', output: note };
         }
         case 'update': {
-          const note = this.services.notes.updateNote(String(tl(step.noteId) ?? ''), {
-            title: step.title !== undefined ? String(tl(step.title)) : undefined,
-            body: step.body !== undefined ? String(tl(step.body)) : undefined,
+          const noteId = getStr(tl(step.noteId));
+          const note = this.services.notes.updateNote(noteId, {
+            title: step.title !== undefined ? getStr(tl(step.title)) : undefined,
+            body: step.body !== undefined ? getStr(tl(step.body)) : undefined,
           });
           return { status: 'ok', output: note };
         }
         case 'search':
-          return { status: 'ok', output: this.services.notes.searchNotes(String(tl(step.query) ?? '')) };
+          return { status: 'ok', output: this.services.notes.searchNotes(getStr(tl(step.query))) };
         case 'list':
           return { status: 'ok', output: this.services.notes.listNotes() };
         default:

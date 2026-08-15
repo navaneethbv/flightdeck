@@ -44,13 +44,17 @@ export async function fetchGithubPrs(
     const n = Number(pr.number ?? 0);
     const head = (pr as { head?: { ref?: string } }).head;
     const repo = (pr as { base?: { repo?: { full_name?: string } } }).base?.repo?.full_name;
+    const titleStr = typeof pr.title === 'string' ? pr.title : '';
+    const stateStr = typeof pr.state === 'string' ? pr.state : '';
+    const urlStr = typeof pr.html_url === 'string' ? pr.html_url : '';
+    const updatedStr = typeof pr.updated_at === 'string' ? pr.updated_at : '';
     return {
       number: n,
-      title: wrapUntrustedContent(String(pr.title ?? '')),
-      state: String(pr.state ?? ''),
+      title: wrapUntrustedContent(titleStr),
+      state: stateStr,
       author: (pr as { user?: { login?: string } }).user?.login ?? null,
-      url: repo ? `https://github.com/${repo}/pull/${n}` : String(pr.html_url ?? ''),
-      updated: String(pr.updated_at ?? ''),
+      url: repo ? `https://github.com/${repo}/pull/${n}` : urlStr,
+      updated: updatedStr,
       branch: head?.ref ?? '',
     };
   });
@@ -68,13 +72,17 @@ export async function fetchGithubPr(
   }
   const pr = (await res.json()) as Record<string, unknown>;
   const head = (pr as { head?: { ref?: string } }).head;
+  const titleStr = typeof pr.title === 'string' ? pr.title : '';
+  const stateStr = typeof pr.state === 'string' ? pr.state : '';
+  const urlStr = typeof pr.html_url === 'string' ? pr.html_url : '';
+  const updatedStr = typeof pr.updated_at === 'string' ? pr.updated_at : '';
   return {
     number: Number(pr.number ?? 0),
-    title: wrapUntrustedContent(String(pr.title ?? '')),
-    state: String(pr.state ?? ''),
+    title: wrapUntrustedContent(titleStr),
+    state: stateStr,
     author: (pr as { user?: { login?: string } }).user?.login ?? null,
-    url: String(pr.html_url ?? ''),
-    updated: String(pr.updated_at ?? ''),
+    url: urlStr,
+    updated: updatedStr,
     branch: head?.ref ?? '',
   };
 }

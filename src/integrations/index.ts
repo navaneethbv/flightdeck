@@ -22,11 +22,11 @@ export interface IntegrationAuthOptions {
 const KINDS: IntegrationKind[] = ['jira', 'github', 'slack'];
 
 function cacheKey(kind: string, suffix = ''): string {
-  return `${kind}${suffix ? `:${suffix}` : ''}`;
+  return suffix ? `${kind}:${suffix}` : kind;
 }
 
 export class Integrations {
-  private db: DatabaseSync;
+  private readonly db: DatabaseSync;
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
   }

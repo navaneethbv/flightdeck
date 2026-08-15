@@ -7,6 +7,17 @@ import type { SessionPolicy } from '../core/types.js';
 import { ToolRegistry } from './tools.js';
 import { log } from '../core/logger.js';
 
+function objectSchemaToZod(def: Record<string, unknown>): z.ZodType {
+  const props = (def.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const req = (def.required ?? []) as string[];
+  const shape: Record<string, z.ZodType> = {};
+  for (const [k, d] of Object.entries(props)) {
+    const t = toZodType(d);
+    shape[k] = req.includes(k) ? t : t.optional();
+  }
+  return Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.any());
+}
+
 function toZodType(def: Record<string, unknown> | undefined): z.ZodType {
   if (!def) return z.any();
   let schema: z.ZodType;
@@ -26,17 +37,9 @@ function toZodType(def: Record<string, unknown> | undefined): z.ZodType {
       case 'array':
         schema = z.array(toZodType(def.items as Record<string, unknown> | undefined));
         break;
-      case 'object': {
-        const props = (def.properties ?? {}) as Record<string, Record<string, unknown>>;
-        const req = (def.required ?? []) as string[];
-        const shape: Record<string, z.ZodType> = {};
-        for (const [k, d] of Object.entries(props)) {
-          const t = toZodType(d);
-          shape[k] = req.includes(k) ? t : t.optional();
-        }
-        schema = Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.any());
+      case 'object':
+        schema = objectSchemaToZod(def);
         break;
-      }
       default:
         schema = z.any();
         break;

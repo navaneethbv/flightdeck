@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { spawnSync } from 'node:child_process';
 import { projectRootOf, printJson, handleError } from '../util.js';
 import { parsePlaybookYaml } from '../../playbooks/parser.js';
+import type { Playbook } from '../../playbooks/types.js';
 import { PlaybookEngine, type EngineServices } from '../../playbooks/engine.js';
 import { NotesStore } from '../../notes/store.js';
 import { TablesStore } from '../../tables/store.js';
@@ -112,15 +113,7 @@ export function registerPlaybooks(program: Command): void {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
         const { engine } = buildEngine(projectRoot);
-        let playbook = null;
-        for (const dir of [playbooksDir(projectRoot), globalPlaybooksDir]) {
-          const file = path.join(dir, `${name}.yml`);
-          if (fs.existsSync(file)) playbook = parsePlaybookYaml(fs.readFileSync(file, 'utf8'), name);
-        }
-        if (!playbook && name in BUILTIN_PLAYBOOKS) {
-          playbook = parsePlaybookYaml(BUILTIN_PLAYBOOKS[name], name);
-        }
-        if (!playbook) throw new Error(`playbook "${name}" not found`);
+        const playbook = findPlaybook(name, projectRoot);
         const result = await engine.run(playbook, {
           inputs: opts.input !== undefined ? (JSON.parse(String(opts.input)) as Record<string, unknown>) : undefined,
           onProgress: (id, stepResult) => {
@@ -129,12 +122,7 @@ export function registerPlaybooks(program: Command): void {
           },
         });
         if (opts.json) printJson(result);
-        else {
-          for (const [id, stepResult] of Object.entries(result.results)) {
-            process.stdout.write(`[${stepResult.status.toUpperCase()}] ${id}${stepResult.error ? `  ${stepResult.error}` : ''}\n`);
-          }
-          process.stdout.write(`playbook "${name}" ${result.ok ? 'succeeded' : 'failed'}\n`);
-        }
+        else printPlaybookResult(name, result);
         if (!result.ok) process.exitCode = 1;
       } catch (err) {
         handleError(err);
@@ -162,6 +150,8 @@ export function registerPlaybooks(program: Command): void {
     });
 }
 
+type IntegrationKind = 'jira' | 'github' | 'slack';
+
 export function registerIntegrations(program: Command): void {
   const integrations = program.command('integration').description('Jira / GitHub / Slack integrations');
 
@@ -178,15 +168,13 @@ export function registerIntegrations(program: Command): void {
         const projectRoot = projectRootOf(opts.project as string | undefined);
         if (kind !== 'jira' && kind !== 'github' && kind !== 'slack') throw new Error(`unknown integration "${kind}"`);
         let token = opts.token !== undefined ? String(opts.token) : undefined;
-        if (token === undefined) {
-          token = await new Promise<string>((resolve) => {
-            const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-            rl.question(`${kind} API token: `, (answer) => {
-              rl.close();
-              resolve(answer.trim());
-            });
+        token ??= await new Promise<string>((resolve) => {
+          const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+          rl.question(`${kind} API token: `, (answer) => {
+            rl.close();
+            resolve(answer.trim());
           });
-        }
+        });
         await new Integrations(projectRoot).auth(kind, {
           domain: opts.domain !== undefined ? String(opts.domain) : undefined,
           email: opts.email !== undefined ? String(opts.email) : undefined,
@@ -205,7 +193,7 @@ export function registerIntegrations(program: Command): void {
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (kind: string, opts: Opts) => {
       try {
-        await new Integrations(projectRootOf(opts.project as string | undefined)).refresh(kind as 'jira' | 'github' | 'slack');
+        await new Integrations(projectRootOf(opts.project as string | undefined)).refresh(kind as IntegrationKind);
         process.stdout.write(`refreshed ${kind}\n`);
       } catch (err) {
         handleError(err);
@@ -299,7 +287,12 @@ export function registerSsh(program: Command): void {
       try {
         const list = new SshStore(projectRootOf(opts.project as string | undefined)).list();
         if (opts.json) printJson(list);
-        else for (const h of list) process.stdout.write(`${h.name.padEnd(20)} ${h.user ? `${h.user}@` : ''}${h.host}:${h.port ?? 22} [${h.auth}]\n`);
+        else {
+          for (const h of list) {
+            const userPrefix = h.user ? `${h.user}@` : '';
+            process.stdout.write(`${h.name.padEnd(20)} ${userPrefix}${h.host}:${h.port ?? 22} [${h.auth}]\n`);
+          }
+        }
       } catch (err) {
         handleError(err);
       }
@@ -339,4 +332,23 @@ export function registerSsh(program: Command): void {
         handleError(err);
       }
     });
+}
+
+function findPlaybook(name: string, projectRoot: string): Playbook {
+  for (const dir of [playbooksDir(projectRoot), globalPlaybooksDir]) {
+    const file = path.join(dir, `${name}.yml`);
+    if (fs.existsSync(file)) return parsePlaybookYaml(fs.readFileSync(file, 'utf8'), name);
+  }
+  if (name in BUILTIN_PLAYBOOKS) {
+    return parsePlaybookYaml(BUILTIN_PLAYBOOKS[name], name);
+  }
+  throw new Error(`playbook "${name}" not found`);
+}
+
+function printPlaybookResult(name: string, result: { ok: boolean; results: Record<string, { status: string; error?: string }> }): void {
+  for (const [id, stepResult] of Object.entries(result.results)) {
+    const errSuffix = stepResult.error ? `  ${stepResult.error}` : '';
+    process.stdout.write(`[${stepResult.status.toUpperCase()}] ${id}${errSuffix}\n`);
+  }
+  process.stdout.write(`playbook "${name}" ${result.ok ? 'succeeded' : 'failed'}\n`);
 }
