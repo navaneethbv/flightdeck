@@ -1,0 +1,4 @@
+# Every change requires review from the repository owner.
+# Paired with the "require code owner review" rule on main, this means no pull
+# request reaches main without @navaneethbv approving it.
+* @navaneethbv

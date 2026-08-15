@@ -1,0 +1,44 @@
+version: 2
+
+# Dependabot *version* updates. Security updates and alerts are configured
+# separately in repository settings and are already enabled; this file is what
+# keeps dependencies current in the absence of a published advisory.
+updates:
+  # The workflows pin every action to a full commit SHA, which is good for
+  # supply-chain safety but freezes them: a pinned SHA never picks up upstream
+  # fixes on its own. Dependabot is what unfreezes them, bumping the SHA and
+  # rewriting the trailing version comment along with it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One grouped PR per week instead of six. Every PR into main has to clear
+    # nine required checks and an owner review, so ungrouped bumps are costly.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Majors are deliberately left ungrouped so they arrive as individual PRs
+    # and get looked at on their own.
+    groups:
+      production-dependencies:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
