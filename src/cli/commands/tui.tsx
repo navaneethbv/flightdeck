@@ -108,7 +108,9 @@ function useSnapshot(
   return [snapshot, load, logIndexRef];
 }
 
-const NEXT_TAB: Record<'sessions' | 'memory' | 'watchdog' | 'logs', 'sessions' | 'memory' | 'watchdog' | 'logs'> = {
+type TabName = 'sessions' | 'memory' | 'watchdog' | 'logs';
+
+const NEXT_TAB: Record<TabName, TabName> = {
   sessions: 'memory',
   memory: 'watchdog',
   watchdog: 'logs',
@@ -127,7 +129,7 @@ function renderLogContent(snap: Snapshot): ReactElement {
 
 function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
   const [snap, refresh, logIndexRef] = useSnapshot(projectRoot);
-  const [tab, setTab] = useState<'sessions' | 'memory' | 'watchdog' | 'logs'>('sessions');
+  const [tab, setTab] = useState<TabName>('sessions');
 
   useInput((input, key) => {
     if (input === 'q' || key.escape) process.exit(0);
