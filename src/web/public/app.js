@@ -28,6 +28,18 @@ function el(id) {
   return document.getElementById(id);
 }
 
+/** Set an element's text, tolerating a DOM that does not contain it. */
+function setText(id, value) {
+  const node = el(id);
+  if (node) node.textContent = value;
+}
+
+/** Set a form control's value, tolerating a DOM that does not contain it. */
+function setControlValue(id, value) {
+  const node = el(id);
+  if (node) node.value = String(value);
+}
+
 function text(value) {
   return value === null || value === undefined || value === '' ? NO_VALUE : String(value);
 }
@@ -74,6 +86,11 @@ function showError(message) {
 
 function clearError() {
   el('error-banner')?.classList.add('hidden');
+}
+
+/** What a failed response said, falling back to its bare status when it said nothing. */
+function responseError(payload, res) {
+  return payload.error ?? `HTTP ${res.status}`;
 }
 
 function initSSE() {
@@ -150,52 +167,61 @@ function renderProjectTree() {
  * than rendering a specimen mission.
  */
 function renderMission() {
-  const fleets = state.argus ?? [];
-  const fleet = fleets.find((f) => f.id === selectedFleetId) ?? fleets[0] ?? null;
+  const fleet = selectedFleet();
   selectedFleetId = fleet ? fleet.id : null;
 
-  // The pulse and permissions cards describe a fleet. With no fleet they have
-  // nothing to say, so they are hidden rather than shown as empty shells.
-  el('mission-empty')?.classList.toggle('hidden', Boolean(fleet));
-  el('mission-body')?.classList.toggle('hidden', !fleet);
-  el('pulse-card')?.classList.toggle('hidden', !fleet);
-  el('laws-card')?.classList.toggle('hidden', !fleet);
+  toggleMissionCards(Boolean(fleet));
   if (!fleet) return;
 
-  const title = el('fleet-title');
-  if (title) title.textContent = fleet.name || NO_VALUE;
-
-  const status = el('fleet-status');
-  if (status) status.textContent = text(fleet.status);
-
-  const heartbeat = el('val-heartbeat');
-  if (heartbeat && fleet.pulseSec) {
-    const minutes = Math.max(1, Math.round(fleet.pulseSec / 60));
-    heartbeat.textContent = `${minutes}m`;
-    const slider = el('slider-heartbeat');
-    if (slider) slider.value = String(minutes);
-  }
-
-  const children = el('val-children');
-  if (children && fleet.childLimit) {
-    children.textContent = String(fleet.childLimit);
-    const slider = el('slider-children');
-    if (slider) slider.value = String(fleet.childLimit);
-  }
-
-  const harnessSelect = el('select-child-harness');
-  if (harnessSelect && state.defaultHarness) harnessSelect.value = state.defaultHarness;
-
-  const note = (state.notes ?? []).find((n) => n.id === fleet.missionNoteId) ?? null;
-  const missionText = el('mission-text');
-  if (missionText) {
-    missionText.textContent = note?.body ? note.body : 'Mission note is empty or missing.';
-  }
-  const noteLabel = el('mission-note-label');
-  if (noteLabel) noteLabel.textContent = note ? note.title : NO_VALUE;
-
+  setText('fleet-title', fleet.name || NO_VALUE);
+  setText('fleet-status', text(fleet.status));
+  renderFleetControls(fleet);
+  renderMissionNote(fleet);
   renderPulseProgress(fleet);
   renderLaws(fleet);
+}
+
+/** The fleet the user picked, falling back to the first when that pick is stale. */
+function selectedFleet() {
+  const fleets = state.argus ?? [];
+  return fleets.find((f) => f.id === selectedFleetId) ?? fleets[0] ?? null;
+}
+
+/**
+ * The pulse and permissions cards describe a fleet. With no fleet they have
+ * nothing to say, so they are hidden rather than shown as empty shells.
+ */
+function toggleMissionCards(hasFleet) {
+  el('mission-empty')?.classList.toggle('hidden', hasFleet);
+  el('mission-body')?.classList.toggle('hidden', !hasFleet);
+  el('pulse-card')?.classList.toggle('hidden', !hasFleet);
+  el('laws-card')?.classList.toggle('hidden', !hasFleet);
+}
+
+/** Heartbeat, child limit and harness controls mirror the fleet's own settings. */
+function renderFleetControls(fleet) {
+  if (fleet.pulseSec) {
+    const minutes = Math.max(1, Math.round(fleet.pulseSec / 60));
+    setText('val-heartbeat', `${minutes}m`);
+    setControlValue('slider-heartbeat', minutes);
+  }
+  if (fleet.childLimit) {
+    setText('val-children', String(fleet.childLimit));
+    setControlValue('slider-children', fleet.childLimit);
+  }
+  if (state.defaultHarness) setControlValue('select-child-harness', state.defaultHarness);
+}
+
+/** The mission note is shown as stored, or reported missing. It is never invented. */
+function renderMissionNote(fleet) {
+  const note = (state.notes ?? []).find((n) => n.id === fleet.missionNoteId) ?? null;
+  setText('mission-text', note?.body ? note.body : 'Mission note is empty or missing.');
+  setText('mission-note-label', note ? note.title : NO_VALUE);
+}
+
+/** A pulse row's optional detail, escaped and space-prefixed, or nothing at all. */
+function detailSuffix(detail) {
+  return detail ? ` ${escapeHtml(detail)}` : '';
 }
 
 /** Recent pulse rows are real history; there is no standing hardcoded routine. */
@@ -216,7 +242,7 @@ function renderPulseProgress(fleet) {
         <span class="bullet-arrow">▶</span>
         <div class="action-text">
           <strong>${escapeHtml(p.kind ?? NO_VALUE)}</strong>
-          ${p.detail ? ` ${escapeHtml(p.detail)}` : ''}
+          ${detailSuffix(p.detail)}
           <div class="sub-step">${escapeHtml(relativeTime(p.createdAt))}</div>
         </div>
       </div>`
@@ -327,7 +353,7 @@ async function runToolkitAction(btn, name) {
       btn.innerHTML = `<span class="play-icon ok">✓</span> Done`;
     } else {
       btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
-      showError(`playbook "${name}" failed: ${payload.error ?? `HTTP ${res.status}`}`);
+      showError(`playbook "${name}" failed: ${responseError(payload, res)}`);
     }
   } catch (err) {
     btn.innerHTML = `<span class="play-icon err">✕</span> Failed`;
@@ -373,7 +399,7 @@ async function loadLogs(id) {
     const res = await fetch(`/api/sessions/${id}/logs`);
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
-      term.textContent = `Could not read logs: ${payload.error ?? `HTTP ${res.status}`}`;
+      term.textContent = `Could not read logs: ${responseError(payload, res)}`;
       return;
     }
     const data = await res.json();
