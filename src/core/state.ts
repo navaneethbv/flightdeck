@@ -122,6 +122,18 @@ function migrate(db: DatabaseSync): void {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS session_telemetry (
+      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+      model TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cached_tokens INTEGER,
+      cost_usd REAL,
+      turns INTEGER,
+      progress INTEGER,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_root);
     CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_session);
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_session);

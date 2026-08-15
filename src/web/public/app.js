@@ -44,6 +44,22 @@ function text(value) {
   return value === null || value === undefined || value === '' ? NO_VALUE : String(value);
 }
 
+/**
+ * Spend and progress come from session_telemetry. A null field renders as a
+ * dash; the harness did not report it. No default, average, or estimate ever
+ * substitutes for a measured value.
+ */
+function formatSpend(costUsd) {
+  if (costUsd === null || costUsd === undefined) return NO_VALUE;
+  if (costUsd < 0.01) return '<$0.01';
+  return `$${costUsd.toFixed(2)}`;
+}
+
+function formatProgress(progress) {
+  if (progress === null || progress === undefined) return NO_VALUE;
+  return `${progress}%`;
+}
+
 function escapeHtml(value) {
   return String(value).replace(
     /[&<>"']/g,
@@ -263,8 +279,8 @@ function renderLaws(fleet) {
 }
 
 /**
- * One card per real session. Model, spend and progress have no backend yet, so
- * they render as dashes until session telemetry lands.
+ * One card per real session. Model, spend, and progress come from
+ * session_telemetry; whatever the harness did not report renders as a dash.
  */
 function renderFleet() {
   const container = el('sessions-container');
@@ -289,6 +305,14 @@ function renderFleet() {
 
     const status = hung.has(s.id) ? 'Hung' : s.status;
     const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
+    const telemetry = s.telemetry ?? {};
+    const model = text(telemetry.model);
+    const spend = formatSpend(telemetry.costUsd);
+    const progress = formatProgress(telemetry.progress);
+    const telemetryNote =
+      model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
+        ? 'Model, spend, and progress were not reported.'
+        : 'Model, spend, and progress as reported by the harness.';
 
     card.innerHTML = `
       <div class="session-card-header">
@@ -296,14 +320,14 @@ function renderFleet() {
           <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
           <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
         </div>
-        <span class="session-percent" title="Progress is not measured yet">${NO_VALUE}</span>
+        <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
       </div>
       <div class="session-card-meta">
         <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
           <span class="status-dot">●</span> ${escapeHtml(status)}
         </span>
-        <span class="session-model-badge" title="Model and spend are not measured yet">
-          ${escapeHtml(s.harness)} · ${NO_VALUE}
+        <span class="session-model-badge" title="${escapeHtml(telemetryNote)}">
+          ${escapeHtml(model)} · ${escapeHtml(spend)}
         </span>
       </div>
       <div class="session-card-footer text-dim">

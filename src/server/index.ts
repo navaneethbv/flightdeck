@@ -17,6 +17,7 @@ import { ToolRegistry, type McpContext } from '../mcp/tools.js';
 import { isHarnessKind } from '../core/types.js';
 import { getDefaultHarness } from '../core/config.js';
 import { getAdapter } from '../sessions/harness.js';
+import { TelemetryStore } from '../sessions/telemetry.js';
 import { spawnSync } from 'node:child_process';
 import type { Session } from '../core/types.js';
 
@@ -78,6 +79,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     const tablesStore = new TablesStore(projectRoot);
     const messaging = new MessagingStore(projectRoot);
     const watchdog = new WatchdogManager(projectRoot);
+    const telemetryStore = new TelemetryStore(projectRoot);
 
     const argusList = argusManager.list();
     const fleets: Record<string, unknown>[] = [];
@@ -117,7 +119,10 @@ export function createWebServer(opts: WebServerOptions = {}): {
     return {
       projectRoot,
       projectName: path.basename(projectRoot),
-      sessions: sm.list().map(publicSession),
+      sessions: sm.list().map((s) => ({
+        ...publicSession(s),
+        telemetry: telemetryStore.get(s.id),
+      })),
       argus: fleets,
       notes: notesStore.list(),
       tables: tablesStore.listTables(),

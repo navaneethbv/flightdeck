@@ -78,4 +78,25 @@ describe('Harness adapters', () => {
       fake.cleanup();
     }
   });
+
+  it('uses parse-friendly session args while keeping llm-step headless args as plain text', () => {
+    const claudeSession = getAdapter('claude').sessionArgs('hi', {});
+    expect(claudeSession).toEqual(['-p', 'hi', '--output-format', 'stream-json', '--verbose']);
+    expect(getAdapter('claude').headlessArgs('hi', {})).toEqual(['-p', 'hi', '--output-format', 'text']);
+
+    const opencodeSession = getAdapter('opencode').sessionArgs('hi', {});
+    expect(opencodeSession).toEqual(['run', '--format', 'json', '--print-logs', 'hi']);
+    expect(getAdapter('opencode').headlessArgs('hi', {})).toEqual(['run', 'hi']);
+
+    expect(getAdapter('codex').sessionArgs('hi', {})).toEqual(['exec', '--json', 'hi']);
+    expect(getAdapter('gemini').sessionArgs('hi', {})).toEqual(['run', 'hi']);
+  });
+
+  it('every adapter declares a telemetry extractor and a log renderer', () => {
+    for (const kind of HARNESSES) {
+      const adapter = getAdapter(kind);
+      expect(typeof adapter.telemetry).toBe('function');
+      expect(typeof adapter.renderLine).toBe('function');
+    }
+  });
 });

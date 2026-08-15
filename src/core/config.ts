@@ -9,10 +9,24 @@ export interface ArgusConfig {
   allowedLimits: number[];
 }
 
+/**
+ * Per-model token pricing in USD per 1,000,000 tokens.
+ * `cacheRead` and `cacheWrite` are optional; absent rates price cached tokens
+ * at zero. Cost is only ever computed for a model present in `models`; an
+ * unknown model yields a null cost, never zero.
+ */
+export interface ModelRates {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
 export interface GlobalConfig {
   defaultHarness: HarnessKind;
   profileDir: Partial<Record<HarnessKind, string>>;
   argus: ArgusConfig;
+  models: Record<string, ModelRates>;
 }
 
 const DEFAULTS: GlobalConfig = {
@@ -22,6 +36,14 @@ const DEFAULTS: GlobalConfig = {
     defaultPulseSec: 60,
     defaultChildLimit: 8,
     allowedLimits: [2, 4, 8, 16],
+  },
+  models: {
+    'claude-opus-5': { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    'gpt-5-codex': { input: 1.25, output: 10, cacheRead: 0.625 },
+    'gpt-5.6-sol': { input: 1.25, output: 10, cacheRead: 0.625 },
+    'deepseek-v4-flash': { input: 0.27, output: 1.1 },
   },
 };
 
@@ -41,6 +63,7 @@ export function loadConfig(): GlobalConfig {
     ...file,
     argus: { ...DEFAULTS.argus, ...(file.argus ?? {}) },
     profileDir: file.profileDir ?? {},
+    models: { ...DEFAULTS.models, ...(file.models ?? {}) },
   };
   if (!HARNESSES.includes(config.defaultHarness)) {
     config.defaultHarness = DEFAULTS.defaultHarness;
