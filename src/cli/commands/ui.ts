@@ -5,6 +5,12 @@ import { createWebServer } from '../../server/index.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
+function getOpenCommand(): string {
+  if (process.platform === 'darwin') return 'open';
+  if (process.platform === 'win32') return 'start';
+  return 'xdg-open';
+}
+
 export function registerUi(program: Command): void {
   program
     .command('ui')
@@ -16,7 +22,7 @@ export function registerUi(program: Command): void {
     .action(async (opts: Opts) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        const port = parseInt(String(opts.port ?? '4173'), 10) || 4173;
+        const port = Number.parseInt(String(opts.port ?? '4173'), 10) || 4173;
 
         const webServer = createWebServer({
           port,
@@ -24,15 +30,18 @@ export function registerUi(program: Command): void {
         });
 
         const actualPort = await webServer.start();
-        const url = `http://127.0.0.1:${actualPort}`;
+        // The capability token travels in the URL fragment, which is never sent
+        // to the server; the client reads it to authorize every /api/* call.
+        const url = `http://127.0.0.1:${actualPort}/#token=${webServer.capabilityToken}`;
 
         process.stdout.write(`\n⚡ Flightdeck Control Plane Dashboard\n`);
         process.stdout.write(`   Project: ${projectRoot}\n`);
-        process.stdout.write(`   URL:     ${url}\n\n`);
+        process.stdout.write(`   URL:     ${url}\n`);
+        process.stdout.write(`   Capability token: ${webServer.capabilityToken}\n\n`);
         process.stdout.write(`   Press Ctrl+C to stop the web server.\n\n`);
 
         if (opts.open !== false) {
-          const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+          const openCmd = getOpenCommand();
           exec(`${openCmd} ${url}`);
         }
 

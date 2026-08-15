@@ -16,7 +16,7 @@ export interface TableInfo {
   createdAt: number;
 }
 
-const VALID_IDENT = /^[A-Za-z][A-Za-z0-9_]*$/;
+const VALID_IDENT = /^[A-Za-z]\w*$/;
 
 function checkIdent(name: string, what: string): void {
   if (!VALID_IDENT.test(name)) {
@@ -53,15 +53,15 @@ function coerce(value: unknown, type: ColumnType): unknown {
       return value === true || value === 1 || value === 'true' || value === '1' ? 1 : 0;
     case 'date': {
       if (value instanceof Date) return value.toISOString();
-      return String(value);
+      return typeof value === 'string' ? value : String(value);
     }
     default:
-      return String(value);
+      return typeof value === 'string' ? value : String(value);
   }
 }
 
 export class TablesStore {
-  private db: DatabaseSync;
+  private readonly db: DatabaseSync;
 
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
@@ -104,7 +104,7 @@ export class TablesStore {
     return rows.map((r) => ({
       name: String(r.name),
       columns: JSON.parse(String(r.schema_json)) as ColumnDef[],
-      idempotencyKey: r.idempotency_key === null ? null : String(r.idempotency_key),
+      idempotencyKey: typeof r.idempotency_key === 'string' ? r.idempotency_key : null,
       createdAt: Number(r.created_at),
     }));
   }
@@ -214,9 +214,8 @@ export class TablesStore {
   }
 
   dropTable(name: string): void {
-    const table = this.assertTable(name);
+    this.assertTable(name);
     this.db.exec(`DROP TABLE IF EXISTS "${tableSqlName(name)}"`);
     this.db.prepare('DELETE FROM flightdeck_tables WHERE name = ?').run(name);
-    void table;
   }
 }

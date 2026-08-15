@@ -15,7 +15,7 @@ steps:
           type: bash
           command: "npm test"
 `,
-  'code-review': `name: code-review
+  'code-review': String.raw`name: code-review
 description: Review changes in a worktree and record a summary note
 inputs:
   - name: worktree
@@ -30,7 +30,7 @@ steps:
     type: note
     action: create
     title: "Code Review: {{ inputs.worktree }}"
-    body: "Automated review for worktree {{ inputs.worktree }}.\\nDiff files changed: {{ steps.diff.output.filesChanged }}"
+    body: "Automated review for worktree {{ inputs.worktree }}.\nDiff files changed: {{ steps.diff.output.filesChanged }}"
 `,
   'sync-tasks': `name: sync-tasks
 description: Synchronize Jira and GitHub tasks into project tables

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import type { DatabaseSync } from 'node:sqlite';
 import { getDb, now } from '../core/state.js';
 import { notesDir } from '../core/paths.js';
 
@@ -24,16 +25,25 @@ function noteFilePath(projectRoot: string, id: string): string {
   return path.join(notesDir(projectRoot), `${id}.md`);
 }
 
+function trimHyphens(str: string): string {
+  let start = 0;
+  let end = str.length;
+  while (start < end && str[start] === '-') start++;
+  while (end > start && str[end - 1] === '-') end--;
+  return str.slice(start, end);
+}
+
 function slugify(title: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  const slug = trimHyphens(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+  );
   return slug || 'note';
 }
 
 function parseFile(content: string): { title: string; body: string } {
-  const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
   if (!m) return { title: '', body: content };
   try {
     const meta = YAML.parse(m[1]) as { title?: unknown };
@@ -62,7 +72,7 @@ function syncFts(db: unknown, noteId: string, title: string, body: string): void
 }
 
 export class NotesStore {
-  private db;
+  private readonly db: DatabaseSync;
 
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
@@ -156,23 +166,14 @@ export class NotesStore {
         .all(safeQuery) as Record<string, unknown>[];
       const seen = new Set<string>();
       const out: NoteSearchResult[] = [];
+      const firstTerm = safeQuery.toLowerCase().split(/\s+/)[0] ?? '';
       for (const r of rows) {
         const id = String(r.note_id);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        const body = String(r.body ?? '');
-        const lowerBody = body.toLowerCase();
-        const firstTerm = safeQuery.toLowerCase().split(/\s+/)[0] ?? '';
-        const idx = lowerBody.indexOf(firstTerm);
-        let snippet = '';
-        if (idx >= 0) {
-          const start = Math.max(0, idx - 30);
-          const end = Math.min(body.length, idx + 70);
-          snippet = (start > 0 ? '...' : '') + body.slice(start, end).trim() + (end < body.length ? '...' : '');
-        } else {
-          snippet = body.slice(0, 100).trim();
+        if (!seen.has(id)) {
+          seen.add(id);
+          const body = typeof r.body === 'string' ? r.body : '';
+          out.push({ id, title: String(r.title), snippet: buildSnippet(body, firstTerm) });
         }
-        out.push({ id, title: String(r.title), snippet });
       }
       return out;
     } catch {
@@ -191,4 +192,15 @@ export class NotesStore {
     const filePath = noteFilePath(this.projectRoot, id);
     if (fs.existsSync(filePath)) fs.rmSync(filePath);
   }
+}
+
+function buildSnippet(body: string, queryTerm: string): string {
+  const lowerBody = body.toLowerCase();
+  const idx = queryTerm ? lowerBody.indexOf(queryTerm) : -1;
+  if (idx < 0) return body.slice(0, 100).trim();
+  const start = Math.max(0, idx - 30);
+  const end = Math.min(body.length, idx + 70);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < body.length ? '...' : '';
+  return `${prefix}${body.slice(start, end).trim()}${suffix}`;
 }

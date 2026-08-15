@@ -21,6 +21,18 @@ import { exportSession } from '../sessions/export.js';
 import { renderMissionTemplate } from '../argus/templates.js';
 import { repairProject } from '../core/repair.js';
 
+function asStr(val: unknown, fallback = ''): string {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  return fallback;
+}
+
+function asOptStr(val: unknown): string | undefined {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  return undefined;
+}
+
 export type ToolRisk = 'read' | 'additive' | 'destructive' | 'external';
 
 export interface ToolDef {
@@ -104,13 +116,14 @@ export class ToolRegistry {
       },
       risk: 'additive',
       handler: async (args) => {
-        const cwd = args.worktree
-          ? path.join(s.projectRoot, '.flightdeck', 'worktrees', String(args.worktree))
+        const wt = asOptStr(args.worktree);
+        const cwd = wt
+          ? path.join(s.projectRoot, '.flightdeck', 'worktrees', wt)
           : s.projectRoot;
         const session = sessions.createSession({
-          name: String(args.name),
+          name: asStr(args.name),
           harness: (args.harness as Session['harness']) ?? getDefaultHarness(),
-          worktree: args.worktree ? String(args.worktree) : null,
+          worktree: wt ?? null,
           cwd,
         });
         return session;
@@ -203,8 +216,8 @@ export class ToolRegistry {
       handler: async (args) =>
         worktreeDiff(
           s.projectRoot,
-          String(args.name),
-          args.base_branch !== undefined ? String(args.base_branch) : 'main'
+          asStr(args.name),
+          asStr(args.base_branch, 'main')
         ),
     });
 
@@ -222,8 +235,8 @@ export class ToolRegistry {
       },
       risk: 'destructive',
       handler: async (args) =>
-        worktreeMerge(s.projectRoot, String(args.name), {
-          targetBranch: args.target_branch !== undefined ? String(args.target_branch) : undefined,
+        worktreeMerge(s.projectRoot, asStr(args.name), {
+          targetBranch: asOptStr(args.target_branch),
           dryRun: args.dry_run === true,
         }),
     });
@@ -284,8 +297,8 @@ export class ToolRegistry {
       },
       risk: 'additive',
       handler: async (args) => {
-        const name = String(args.name);
-        const title = args.title !== undefined ? String(args.title) : name;
+        const name = asStr(args.name);
+        const title = asOptStr(args.title) ?? name;
         const template = (args.template as 'feature' | 'refactor' | 'audit' | 'bugfix') ?? 'feature';
         const body = renderMissionTemplate(template, title);
         return notes.createNote(`${name}-mission`, body);
@@ -327,7 +340,7 @@ export class ToolRegistry {
       risk: 'read',
       handler: async (args) =>
         watchdog.inspect(
-          String(args.id),
+          asStr(args.id),
           args.timeout_seconds !== undefined ? Number(args.timeout_seconds) : 300
         ),
     });
@@ -337,14 +350,14 @@ export class ToolRegistry {
         description: 'Create a note in the project notes store.',
         inputSchema: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' } }, required: ['title', 'body'] },
         risk: 'additive',
-        handler: async (a: Record<string, unknown>) => notes.createNote(String(a.title), String(a.body)),
+        handler: async (a: Record<string, unknown>) => notes.createNote(asStr(a.title), asStr(a.body)),
       }],
       ['note_read', {
         description: 'Read a note by id.',
         inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
         risk: 'read',
         handler: async (a: Record<string, unknown>) => {
-          const note = notes.readNote(String(a.id));
+          const note = notes.readNote(asStr(a.id));
           if (!note) throw new Error(`note "${a.id}" not found`);
           return note;
         },
@@ -353,9 +366,9 @@ export class ToolRegistry {
         description: 'Update a note title and/or body (new version).',
         inputSchema: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' } }, required: ['id'] },
         risk: 'additive',
-        handler: async (a: Record<string, unknown>) => notes.updateNote(String(a.id), {
-          title: a.title !== undefined ? String(a.title) : undefined,
-          body: a.body !== undefined ? String(a.body) : undefined,
+        handler: async (a: Record<string, unknown>) => notes.updateNote(asStr(a.id), {
+          title: asOptStr(a.title),
+          body: asOptStr(a.body),
         }),
       }],
       ['note_search', {
@@ -399,18 +412,10 @@ export class ToolRegistry {
       risk: 'additive',
       handler: async (args) =>
         tables.createTable(
-          String(args.name),
-          (args.columns as ColumnDef[] | undefined) ?? [],
-          args.idempotency_key !== undefined ? String(args.idempotency_key) : undefined
+          asStr(args.name),
+          (args.columns as ColumnDef[]) ?? [],
+          asOptStr(args.idempotency_key)
         ),
-    });
-
-    this.register({
-      name: 'table_list',
-      description: 'List tables.',
-      inputSchema: { type: 'object', properties: {} },
-      risk: 'read',
-      handler: async () => tables.listTables(),
     });
 
     this.register({
@@ -422,7 +427,15 @@ export class ToolRegistry {
         required: ['name', 'data'],
       },
       risk: 'additive',
-      handler: async (args) => tables.insertRow(String(args.name), (args.data as Record<string, unknown>) ?? {}),
+      handler: async (args) => tables.insertRow(asStr(args.name), (args.data as Record<string, unknown>) ?? {}),
+    });
+
+    this.register({
+      name: 'table_list',
+      description: 'List structured project tables and their schemas.',
+      inputSchema: { type: 'object', properties: {} },
+      risk: 'read',
+      handler: async () => tables.listTables(),
     });
 
     this.register({
@@ -440,8 +453,8 @@ export class ToolRegistry {
       },
       risk: 'read',
       handler: async (args) =>
-        tables.query(String(args.name), {
-          where: (args.where as Record<string, unknown> | undefined) ?? undefined,
+        tables.query(asStr(args.name), {
+          where: args.where as Record<string, unknown> | undefined,
           limit: args.limit !== undefined ? Number(args.limit) : undefined,
           orderBy: args.order_by as { col: string; dir?: 'asc' | 'desc' } | undefined,
         }),
@@ -457,7 +470,7 @@ export class ToolRegistry {
       },
       risk: 'additive',
       handler: async (args) => {
-        tables.updateRow(String(args.name), Number(args.rowid), (args.data as Record<string, unknown>) ?? {});
+        tables.updateRow(asStr(args.name), Number(args.rowid), (args.data as Record<string, unknown>) ?? {});
         return { updated: true };
       },
     });
@@ -478,10 +491,10 @@ export class ToolRegistry {
       risk: 'read',
       handler: async (args) =>
         tables.aggregate(
-          String(args.name),
+          asStr(args.name),
           args.fn as 'count' | 'sum' | 'avg' | 'min' | 'max',
-          args.column !== undefined ? String(args.column) : undefined,
-          args.group_by !== undefined ? String(args.group_by) : undefined
+          asOptStr(args.column),
+          asOptStr(args.group_by)
         ),
     });
 
@@ -495,7 +508,7 @@ export class ToolRegistry {
       },
       risk: 'destructive',
       handler: async (args) => {
-        tables.dropTable(String(args.name));
+        tables.dropTable(asStr(args.name));
         return { dropped: args.name };
       },
     });
@@ -510,7 +523,7 @@ export class ToolRegistry {
       },
       risk: 'additive',
       handler: async (args) =>
-        messaging.send(s.sessionId ?? 'agent', args.to !== undefined ? String(args.to) : null, String(args.body)),
+        messaging.send(s.sessionId ?? 'agent', asOptStr(args.to) ?? null, asStr(args.body)),
     });
 
     this.register({
@@ -523,7 +536,7 @@ export class ToolRegistry {
       risk: 'read',
       handler: async (args) =>
         messaging.list({
-          to: args.to !== undefined ? String(args.to) : undefined,
+          to: asOptStr(args.to),
           limit: args.limit !== undefined ? Number(args.limit) : undefined,
         }),
     });
@@ -537,7 +550,7 @@ export class ToolRegistry {
         required: ['to'],
       },
       risk: 'read',
-      handler: async (args) => messaging.poll(String(args.to), args.since_id !== undefined ? Number(args.since_id) : 0),
+      handler: async (args) => messaging.poll(asStr(args.to), args.since_id !== undefined ? Number(args.since_id) : 0),
     });
 
     this.register({
@@ -554,7 +567,7 @@ export class ToolRegistry {
       risk: 'read',
       handler: async (a) =>
         integrations.listJiraIssues({
-          jql: a.jql !== undefined ? String(a.jql) : undefined,
+          jql: asOptStr(a.jql),
           max: a.max !== undefined ? Number(a.max) : undefined,
           force: a.force === true,
         }),
@@ -688,12 +701,12 @@ export class ToolRegistry {
       risk: 'additive',
       handler: async (args) =>
         ssh.add({
-          name: String(args.name),
-          host: String(args.host),
+          name: asStr(args.name),
+          host: asStr(args.host),
           port: args.port !== undefined ? Number(args.port) : null,
-          user: args.user !== undefined ? String(args.user) : null,
+          user: asOptStr(args.user) ?? null,
           auth: (args.auth as 'agent' | 'key' | 'password' | undefined) ?? 'agent',
-          keyFile: args.key_file !== undefined ? String(args.key_file) : null,
+          keyFile: asOptStr(args.key_file) ?? null,
           createdAt: 0,
         }),
     });
@@ -794,7 +807,7 @@ export class ToolRegistry {
         // dir missing
       }
     }
-    return [...names].sort();
+    return [...names].sort((a, b) => a.localeCompare(b));
   }
 
   private readPlaybook(name: string): Playbook | null {

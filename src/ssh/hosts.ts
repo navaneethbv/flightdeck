@@ -20,15 +20,15 @@ function rowToHost(row: Record<string, unknown>): SshHost {
     name: String(row.name),
     host: String(row.host),
     port: row.port === null ? null : Number(row.port),
-    user: row.user === null ? null : String(row.user),
+    user: typeof row.user === 'string' ? row.user : null,
     auth: row.auth as SshHost['auth'],
-    keyFile: row.key_file === null ? null : String(row.key_file),
+    keyFile: typeof row.key_file === 'string' ? row.key_file : null,
     createdAt: Number(row.created_at),
   };
 }
 
 export class SshStore {
-  private db: DatabaseSync;
+  private readonly db: DatabaseSync;
   constructor(private readonly projectRoot: string) {
     this.db = getDb(projectRoot);
   }

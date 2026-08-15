@@ -6,6 +6,26 @@ import { renderMissionTemplate, type MissionTemplateKind } from '../../argus/tem
 
 type Opts = Record<string, string | boolean | undefined>;
 
+function printArgusFleet(fleet: ReturnType<ArgusManager['fleet']>): void {
+  process.stdout.write(`argus ${fleet.argus.name} (${fleet.argus.id}) ${fleet.argus.status}\n`);
+  process.stdout.write(`  mission: ${fleet.argus.missionNoteId}  children: ${fleet.children.length}/${fleet.argus.childLimit}  pulse: ${fleet.argus.pulseSec}s\n`);
+  for (const child of fleet.children) {
+    const s = child.session;
+    const childDesc = s ? `${s.name} ${s.status} ${s.harness}` : 'unknown';
+    process.stdout.write(`  child ${childDesc}\n`);
+  }
+  for (const p of fleet.recentProgress.slice(-5)) {
+    const detail = typeof p.detail === 'string' ? p.detail : '';
+    process.stdout.write(`  progress: ${String(p.event)} ${detail}\n`);
+  }
+}
+
+function printArgusList(list: ReturnType<ArgusManager['list']>): void {
+  for (const a of list) {
+    process.stdout.write(`${a.status.padEnd(8)} ${a.name.padEnd(20)} ${a.id}  children=${a.childLimit} mission=${a.missionNoteId ?? '-'}\n`);
+  }
+}
+
 export function registerArgus(program: Command): void {
   const argus = program.command('argus').description('Multi-agent orchestrator driven by a mission note');
 
@@ -104,24 +124,14 @@ export function registerArgus(program: Command): void {
             printJson(fleet);
             return;
           }
-          process.stdout.write(`argus ${fleet.argus.name} (${fleet.argus.id}) ${fleet.argus.status}\n`);
-          process.stdout.write(`  mission: ${fleet.argus.missionNoteId}  children: ${fleet.children.length}/${fleet.argus.childLimit}  pulse: ${fleet.argus.pulseSec}s\n`);
-          for (const child of fleet.children) {
-            const s = child.session;
-            process.stdout.write(`  child ${s ? `${s.name} ${s.status} ${s.harness}` : 'unknown'}\n`);
-          }
-          for (const p of fleet.recentProgress.slice(-5)) {
-            process.stdout.write(`  progress: ${String(p.event)} ${String(p.detail ?? '')}\n`);
-          }
+          printArgusFleet(fleet);
         } else {
           const list = manager.list();
           if (opts.json) {
             printJson(list);
             return;
           }
-          for (const a of list) {
-            process.stdout.write(`${a.status.padEnd(8)} ${a.name.padEnd(20)} ${a.id}  children=${a.childLimit} mission=${a.missionNoteId ?? '-'}\n`);
-          }
+          printArgusList(list);
         }
       } catch (err) {
         handleError(err);

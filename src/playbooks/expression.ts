@@ -20,6 +20,62 @@ interface Token {
   isQuoted?: boolean;
 }
 
+function readQuotedString(expr: string, i: number): { token: Token; nextI: number } {
+  const quote = expr[i];
+  let str = '';
+  let idx = i + 1;
+  while (idx < expr.length && expr[idx] !== quote) {
+    if (expr[idx] === '\\' && idx + 1 < expr.length) {
+      idx++;
+      str += expr[idx];
+    } else {
+      str += expr[idx];
+    }
+    idx++;
+  }
+  if (idx < expr.length && expr[idx] === quote) {
+    idx++;
+  }
+  return { token: { type: 'literal', value: str, isQuoted: true }, nextI: idx };
+}
+
+function readOperator(expr: string, i: number): { token: Token; nextI: number } | null {
+  const two = expr.slice(i, i + 2);
+  if (two === '==' || two === '!=' || two === '>=' || two === '<=' || two === '&&' || two === '||') {
+    return { token: { type: 'op', value: two }, nextI: i + 2 };
+  }
+  const ch = expr[i];
+  if (ch === '>' || ch === '<') {
+    return { token: { type: 'op', value: ch }, nextI: i + 1 };
+  }
+  if (expr.slice(i, i + 3).toLowerCase() === 'and' && (i + 3 >= expr.length || /[\s()]/.test(expr[i + 3]))) {
+    return { token: { type: 'op', value: '&&' }, nextI: i + 3 };
+  }
+  if (expr.slice(i, i + 2).toLowerCase() === 'or' && (i + 2 >= expr.length || /[\s()]/.test(expr[i + 2]))) {
+    return { token: { type: 'op', value: '||' }, nextI: i + 2 };
+  }
+  if (expr.slice(i, i + 3).toLowerCase() === 'not' && (i + 3 >= expr.length || /[\s()]/.test(expr[i + 3]))) {
+    return { token: { type: 'op', value: '!' }, nextI: i + 3 };
+  }
+  return null;
+}
+
+function readLiteral(expr: string, i: number): { token: Token; nextI: number } {
+  let end = i;
+  while (
+    end < expr.length &&
+    !/[\s()=!<>"']/.test(expr[end]) &&
+    expr.slice(end, end + 2) !== '&&' &&
+    expr.slice(end, end + 2) !== '||'
+  ) {
+    end++;
+  }
+  if (end === i) {
+    throw new Error(`unexpected character "${expr[i]}" in condition "${expr}"`);
+  }
+  return { token: { type: 'literal', value: expr.slice(i, end) }, nextI: end };
+}
+
 function tokenize(expr: string): Token[] {
   const tokens: Token[] = [];
   let i = 0;
@@ -35,64 +91,20 @@ function tokenize(expr: string): Token[] {
       continue;
     }
     if (ch === '"' || ch === "'") {
-      const quote = ch;
-      let str = '';
-      i++;
-      while (i < expr.length && expr[i] !== quote) {
-        if (expr[i] === '\\' && i + 1 < expr.length) {
-          i++;
-          str += expr[i];
-        } else {
-          str += expr[i];
-        }
-        i++;
-      }
-      if (i < expr.length && expr[i] === quote) {
-        i++;
-      }
-      tokens.push({ type: 'literal', value: str, isQuoted: true });
+      const res = readQuotedString(expr, i);
+      tokens.push(res.token);
+      i = res.nextI;
       continue;
     }
-    const two = expr.slice(i, i + 2);
-    if (two === '==' || two === '!=' || two === '>=' || two === '<=' || two === '&&' || two === '||') {
-      tokens.push({ type: 'op', value: two });
-      i += 2;
+    const op = readOperator(expr, i);
+    if (op) {
+      tokens.push(op.token);
+      i = op.nextI;
       continue;
     }
-    if (ch === '>' || ch === '<') {
-      tokens.push({ type: 'op', value: ch });
-      i++;
-      continue;
-    }
-    if (expr.slice(i, i + 3).toLowerCase() === 'and' && (i + 3 >= expr.length || /[\s()]/.test(expr[i + 3]))) {
-      tokens.push({ type: 'op', value: '&&' });
-      i += 3;
-      continue;
-    }
-    if (expr.slice(i, i + 2).toLowerCase() === 'or' && (i + 2 >= expr.length || /[\s()]/.test(expr[i + 2]))) {
-      tokens.push({ type: 'op', value: '||' });
-      i += 2;
-      continue;
-    }
-    if (expr.slice(i, i + 3).toLowerCase() === 'not' && (i + 3 >= expr.length || /[\s()]/.test(expr[i + 3]))) {
-      tokens.push({ type: 'op', value: '!' });
-      i += 3;
-      continue;
-    }
-    let end = i;
-    while (
-      end < expr.length &&
-      !/[\s()=!<>"']/.test(expr[end]) &&
-      expr.slice(end, end + 2) !== '&&' &&
-      expr.slice(end, end + 2) !== '||'
-    ) {
-      end++;
-    }
-    if (end === i) {
-      throw new Error(`unexpected character "${ch}" in condition "${expr}"`);
-    }
-    tokens.push({ type: 'literal', value: expr.slice(i, end) });
-    i = end;
+    const lit = readLiteral(expr, i);
+    tokens.push(lit.token);
+    i = lit.nextI;
   }
   return tokens;
 }
@@ -172,42 +184,31 @@ class Parser {
   }
 }
 
+function compareValues(a: string | number, b: string | number, op: string): boolean {
+  switch (op) {
+    case '==':
+      return a === b;
+    case '!=':
+      return a !== b;
+    case '>':
+      return a > b;
+    case '<':
+      return a < b;
+    case '>=':
+      return a >= b;
+    case '<=':
+      return a <= b;
+    default:
+      return false;
+  }
+}
+
 function compare(left: string, right: string, op: string, leftQuoted?: boolean, rightQuoted?: boolean): boolean {
   if (leftQuoted || rightQuoted) {
-    switch (op) {
-      case '==':
-        return left === right;
-      case '!=':
-        return left !== right;
-      case '>':
-        return left > right;
-      case '<':
-        return left < right;
-      case '>=':
-        return left >= right;
-      case '<=':
-        return left <= right;
-      default:
-        return false;
-    }
+    return compareValues(left, right, op);
   }
   const lNum = Number(left);
   const rNum = Number(right);
   const bothNumbers = !Number.isNaN(lNum) && !Number.isNaN(rNum) && left.trim() !== '' && right.trim() !== '';
-  switch (op) {
-    case '==':
-      return bothNumbers ? lNum === rNum : left === right;
-    case '!=':
-      return bothNumbers ? lNum !== rNum : left !== right;
-    case '>':
-      return bothNumbers ? lNum > rNum : left > right;
-    case '<':
-      return bothNumbers ? lNum < rNum : left < right;
-    case '>=':
-      return bothNumbers ? lNum >= rNum : left >= right;
-    case '<=':
-      return bothNumbers ? lNum <= rNum : left <= right;
-    default:
-      return false;
-  }
+  return bothNumbers ? compareValues(lNum, rNum, op) : compareValues(left, right, op);
 }

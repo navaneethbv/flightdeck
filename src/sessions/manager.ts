@@ -6,6 +6,7 @@ import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
 import type { HarnessKind, Session, SessionPolicy } from '../core/types.js';
 import { adapters } from './harness.js';
+import { TelemetryCollector } from './telemetry.js';
 import { log } from '../core/logger.js';
 
 export interface CreateSessionOptions {
@@ -34,14 +35,14 @@ export function rowToSession(row: Record<string, unknown>): Session {
     name: String(row.name),
     harness: row.harness as HarnessKind,
     projectRoot: String(row.project_root),
-    worktree: row.worktree === null ? null : String(row.worktree),
+    worktree: typeof row.worktree === 'string' ? row.worktree : null,
     cwd: String(row.cwd),
     pid: row.pid === null ? null : Number(row.pid),
     status: row.status as Session['status'],
     token: String(row.token),
     policy: row.policy as SessionPolicy,
-    argusParent: row.argus_parent === null ? null : String(row.argus_parent),
-    task: row.task === null || row.task === undefined ? null : String(row.task),
+    argusParent: typeof row.argus_parent === 'string' ? row.argus_parent : null,
+    task: typeof row.task === 'string' ? row.task : null,
     startedAt: Number(row.started_at),
     endedAt: row.ended_at === null ? null : Number(row.ended_at),
     lastActivityAt: Number(row.last_activity_at),
@@ -124,7 +125,7 @@ export class SessionManager {
       ...process.env,
       ...profileEnv,
       ...extraMcpEnv,
-      ...(opts.env ?? {}),
+      ...opts.env,
       FLIGHTDECK_SESSION_ID: session.id,
       FLIGHTDECK_SESSION_TOKEN: session.token,
     };
@@ -133,7 +134,7 @@ export class SessionManager {
     let logStream: fs.WriteStream | null = null;
 
     const args = opts.headless
-      ? adapter.headlessArgs(opts.prompt ?? '', { autonomy: opts.autonomy })
+      ? adapter.sessionArgs(opts.prompt ?? '', { autonomy: opts.autonomy })
       : adapter.interactiveArgs();
 
     log.info(`starting session ${session.id} harness=${session.harness} headless=${opts.headless ?? false} cwd=${cwd}`);
@@ -159,16 +160,30 @@ export class SessionManager {
         logStream.on('error', (err) => {
           log.error(`session ${session.id} log stream error: ${err.message}`);
         });
+        const collector = new TelemetryCollector(this.projectRoot, session.id, {
+          parseLine: adapter.telemetry,
+          renderLine: adapter.renderLine,
+        });
         child.stdout?.on('data', (d) => {
           try {
-            logStream?.write(d);
+            const text = collector.feed(d.toString(), 'stdout');
+            if (text) logStream?.write(text);
           } catch {
             // ignore
           }
         });
         child.stderr?.on('data', (d) => {
           try {
-            logStream?.write(d);
+            const text = collector.feed(d.toString(), 'stderr');
+            if (text) logStream?.write(text);
+          } catch {
+            // ignore
+          }
+        });
+        child.on('close', () => {
+          try {
+            const text = collector.flush();
+            if (text) logStream?.write(text);
           } catch {
             // ignore
           }
@@ -178,7 +193,7 @@ export class SessionManager {
       }
     }
 
-    const finish = (code: number | null, signal: string | null): void => {
+    const finish = async (code: number | null, signal: string | null): Promise<void> => {
       running.delete(id);
       try {
         const dbNow = getDb(this.projectRoot);
@@ -190,7 +205,9 @@ export class SessionManager {
       }
       if (logStream) {
         try {
-          logStream.end();
+          await new Promise<void>((resolve) => {
+            logStream!.end(() => resolve());
+          });
         } catch {
           // ignore
         }
@@ -202,25 +219,25 @@ export class SessionManager {
     if (opts.headless) {
       if (opts.waitForExit) {
         const exitCode = await new Promise<number | null>((resolve) => {
-          child.on('exit', (code) => resolve(code));
+          child.on('close', (code) => resolve(code));
           child.on('error', (err) => {
             log.error(`session ${session.id} spawn error: ${err.message}`);
             resolve(null);
           });
         });
-        finish(exitCode, null);
+        await finish(exitCode, null);
       } else {
-        child.on('exit', (code, signal) => finish(code, signal));
+        child.on('close', (code, signal) => void finish(code, signal));
         child.on('error', (err) => {
           log.error(`session ${session.id} spawn error: ${err.message}`);
-          finish(null, null);
+          void finish(null, null);
         });
       }
     } else {
-      child.on('exit', (code, signal) => finish(code, signal));
+      child.on('close', (code, signal) => void finish(code, signal));
       child.on('error', (err) => {
         log.error(`session ${session.id} spawn error: ${err.message}`);
-        finish(null, null);
+        void finish(null, null);
       });
     }
 
@@ -231,7 +248,7 @@ export class SessionManager {
     const session = this.get(id);
     if (!session) throw new Error(`session "${id}" not found`);
     const child = running.get(id);
-    if (child && child.pid) {
+    if (child?.pid) {
       if (child.stdout === null) {
         try {
           process.kill(-child.pid, 'SIGTERM');
@@ -273,7 +290,13 @@ export class SessionManager {
   }
 
   getLogs(id: string, tailLines = 100): string {
-    const logPath = path.join(this.projectRoot, '.flightdeck', 'logs', 'sessions', `${id}.log`);
+    const logDir = path.resolve(this.projectRoot, '.flightdeck', 'logs', 'sessions');
+    const logPath = path.resolve(logDir, `${id}.log`);
+    // Fail closed if the id ever resolves outside the session log directory;
+    // path traversal must never turn this into an arbitrary file read.
+    if (!logPath.startsWith(`${logDir}${path.sep}`)) {
+      return '';
+    }
     if (!fs.existsSync(logPath)) {
       return '';
     }

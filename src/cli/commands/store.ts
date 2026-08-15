@@ -147,7 +147,12 @@ export function registerTables(program: Command): void {
       try {
         const list = new TablesStore(projectRootOf(opts.project as string | undefined)).listTables();
         if (opts.json) printJson(list);
-        else for (const t of list) process.stdout.write(`${t.name.padEnd(20)} (${t.columns.map((c) => `${c.name}:${c.type}`).join(', ')})\n`);
+        else {
+          for (const t of list) {
+            const cols = t.columns.map((c) => `${c.name}:${c.type}`).join(', ');
+            process.stdout.write(`${t.name.padEnd(20)} (${cols})\n`);
+          }
+        }
       } catch (err) {
         handleError(err);
       }

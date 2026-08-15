@@ -15,7 +15,7 @@ export function registerWatchdog(program: Command): void {
     .option('--json', 'emit machine-readable output')
     .action((opts: Opts) => {
       try {
-        const timeout = parseInt(String(opts.timeout ?? '300'), 10) || 300;
+        const timeout = Number.parseInt(String(opts.timeout ?? '300'), 10) || 300;
         const hung = new WatchdogManager(projectRootOf(opts.project as string | undefined)).listHung(timeout);
         if (opts.json) printJson(hung);
         else {
@@ -41,7 +41,7 @@ export function registerWatchdog(program: Command): void {
     .option('--json', 'emit machine-readable output')
     .action((id: string, opts: Opts) => {
       try {
-        const timeout = parseInt(String(opts.timeout ?? '300'), 10) || 300;
+        const timeout = Number.parseInt(String(opts.timeout ?? '300'), 10) || 300;
         const inspection = new WatchdogManager(projectRootOf(opts.project as string | undefined)).inspect(id, timeout);
         if (opts.json) printJson(inspection);
         else {
@@ -66,7 +66,7 @@ export function registerWatchdog(program: Command): void {
     .option('--json', 'emit machine-readable output')
     .action(async (opts: Opts) => {
       try {
-        const timeout = parseInt(String(opts.timeout ?? '300'), 10) || 300;
+        const timeout = Number.parseInt(String(opts.timeout ?? '300'), 10) || 300;
         const result = await new WatchdogManager(projectRootOf(opts.project as string | undefined)).killHung(timeout);
         if (opts.json) printJson(result);
         else {

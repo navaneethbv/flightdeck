@@ -8,6 +8,33 @@ import { repairProject } from '../../core/repair.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
+function runDoctorChecks(root: string): { name: string; ok: boolean; detail: string }[] {
+  const checks: { name: string; ok: boolean; detail: string }[] = [];
+  const git = gitVersion();
+  checks.push({ name: 'git', ok: !git.includes('not found'), detail: git });
+  for (const kind of HARNESSES) {
+    const adapter = adapters[kind];
+    const detected = adapter.detect();
+    checks.push({ name: `harness:${kind}`, ok: detected, detail: detected ? `${adapter.binary} detected` : 'not installed' });
+  }
+  const repo = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
+  const isRepo = repo.status === 0;
+  checks.push({ name: 'git-repo', ok: isRepo, detail: isRepo ? root : 'current directory is not a git repo' });
+  return checks;
+}
+
+function printDoctorResults(checks: { name: string; ok: boolean; detail: string }[], repair: ReturnType<typeof repairProject> | null): void {
+  if (repair) {
+    process.stdout.write(`repair: ${repair.ok ? 'success' : 'warnings'}\n`);
+    for (const f of repair.fixed) process.stdout.write(`  [fixed] ${f}\n`);
+    for (const w of repair.warnings) process.stdout.write(`  [warn]  ${w}\n`);
+    process.stdout.write('\n');
+  }
+  for (const c of checks) {
+    process.stdout.write(`${c.ok ? 'ok  ' : 'FAIL'}  ${c.name.padEnd(16)} ${c.detail}\n`);
+  }
+}
+
 export function registerDoctor(program: Command): void {
   program
     .command('doctor')
@@ -18,36 +45,14 @@ export function registerDoctor(program: Command): void {
     .action((opts: Opts) => {
       try {
         const root = projectRootOf(opts.project as string | undefined);
-        let repair = null;
-        if (opts.fix) {
-          repair = repairProject(root);
-        }
-
-        const checks: { name: string; ok: boolean; detail: string }[] = [];
-        const git = gitVersion();
-        checks.push({ name: 'git', ok: !git.includes('not found'), detail: git });
-        for (const kind of HARNESSES) {
-          const adapter = adapters[kind];
-          const detected = adapter.detect();
-          checks.push({ name: `harness:${kind}`, ok: detected, detail: detected ? `${adapter.binary} detected` : 'not installed' });
-        }
-        const repo = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
-        const isRepo = repo.status === 0;
-        checks.push({ name: 'git-repo', ok: isRepo, detail: isRepo ? root : 'current directory is not a git repo' });
+        const repair = opts.fix ? repairProject(root) : null;
+        const checks = runDoctorChecks(root);
 
         if (opts.json) {
           printJson({ ok: checks.every((c) => c.ok), checks, repair });
           return;
         }
-        if (repair) {
-          process.stdout.write(`repair: ${repair.ok ? 'success' : 'warnings'}\n`);
-          for (const f of repair.fixed) process.stdout.write(`  [fixed] ${f}\n`);
-          for (const w of repair.warnings) process.stdout.write(`  [warn]  ${w}\n`);
-          process.stdout.write('\n');
-        }
-        for (const c of checks) {
-          process.stdout.write(`${c.ok ? 'ok  ' : 'FAIL'}  ${c.name.padEnd(16)} ${c.detail}\n`);
-        }
+        printDoctorResults(checks, repair);
         process.exitCode = checks.every((c) => c.ok) ? 0 : 1;
       } catch (err) {
         handleError(err);

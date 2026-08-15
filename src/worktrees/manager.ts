@@ -38,6 +38,36 @@ export function createWorktree(projectRoot: string, name: string, sessionId?: st
   return { name, path: dir, branch };
 }
 
+function parseWorktreePath(line: string): string {
+  const p = line.slice('worktree '.length);
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+function normalizeWorktreesDir(projectRoot: string): string {
+  const dir = worktreesDir(projectRoot);
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+function finalizeWorktreeEntry(
+  current: Partial<WorktreeInfo> & { path?: string },
+  wtDir: string,
+  out: WorktreeInfo[]
+): void {
+  if (!current.path) return;
+  const rel = path.relative(wtDir, current.path);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+    out.push({ name: rel, path: current.path, branch: current.branch ?? '' });
+  }
+}
+
 export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   assertGitRepo(projectRoot);
   const result = spawnSync('git', ['-C', projectRoot, 'worktree', 'list', '--porcelain'], {
@@ -45,31 +75,16 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   });
   if (result.status !== 0) return [];
   const out: WorktreeInfo[] = [];
+  const wtDir = normalizeWorktreesDir(projectRoot);
   let current: Partial<WorktreeInfo> & { path?: string } = {};
+
   for (const line of result.stdout.split('\n')) {
     if (line.startsWith('worktree ')) {
-      let p = line.slice('worktree '.length);
-      try {
-        p = fs.realpathSync(p);
-      } catch {
-        // keep the raw path
-      }
-      current = { path: p };
+      current = { path: parseWorktreePath(line) };
     } else if (line.startsWith('branch ')) {
       current.branch = line.slice('branch refs/heads/'.length);
     } else if (line.trim() === '') {
-      if (current.path) {
-        let wtDir = worktreesDir(projectRoot);
-        try {
-          wtDir = fs.realpathSync(wtDir);
-        } catch {
-          // keep as-is
-        }
-        const rel = path.relative(wtDir, current.path);
-        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
-          out.push({ name: rel, path: current.path, branch: current.branch ?? '' });
-        }
-      }
+      finalizeWorktreeEntry(current, wtDir, out);
       current = {};
     }
   }
@@ -94,7 +109,7 @@ export function runPostCreateHooks(projectRoot: string, worktreeDir: string, ses
   const scripts = fs
     .readdirSync(dir)
     .filter((f) => f.endsWith('.sh'))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     FLIGHTDECK_WORKTREE: worktreeDir,
@@ -164,7 +179,7 @@ export function worktreeStatus(
   let ahead = 0;
   const aheadRes = spawnSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD', '^main'], { encoding: 'utf8' });
   if (aheadRes.status === 0) {
-    ahead = parseInt(aheadRes.stdout.trim(), 10) || 0;
+    ahead = Number.parseInt(aheadRes.stdout.trim(), 10) || 0;
   }
 
   return {

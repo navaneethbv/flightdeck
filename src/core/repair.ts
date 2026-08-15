@@ -11,20 +11,7 @@ export interface RepairResult {
   warnings: string[];
 }
 
-export function repairProject(projectRoot: string): RepairResult {
-  const root = normalizeProjectRoot(projectRoot);
-  const fixed: string[] = [];
-  const warnings: string[] = [];
-
-  // 1. Ensure .gitignore has .flightdeck/
-  try {
-    ensureFlightdeckDirIgnored(root);
-    fixed.push('verified .flightdeck/ in .gitignore');
-  } catch (err) {
-    warnings.push(`failed to update .gitignore: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // 2. Ensure project directories exist
+function repairDirectories(root: string, fixed: string[]): void {
   const dirs = [
     path.join(root, '.flightdeck'),
     notesDir(root),
@@ -39,12 +26,13 @@ export function repairProject(projectRoot: string): RepairResult {
       fixed.push(`created directory ${path.relative(root, d)}`);
     }
   }
+}
 
-  // 3. Check SQLite integrity and cleanup stale running processes
+function repairSessions(root: string, fixed: string[], warnings: string[]): void {
   try {
     const db = getDb(root);
     const integrity = db.prepare('PRAGMA integrity_check').get() as { integrity_check?: string };
-    if (integrity && integrity.integrity_check !== 'ok') {
+    if (integrity?.integrity_check !== 'ok') {
       warnings.push(`sqlite integrity issue: ${integrity.integrity_check}`);
     }
 
@@ -72,8 +60,9 @@ export function repairProject(projectRoot: string): RepairResult {
   } catch (err) {
     warnings.push(`database check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
 
-  // 4. Prune git worktrees
+function repairWorktrees(root: string, fixed: string[]): void {
   try {
     const pruneRes = spawnSync('git', ['-C', root, 'worktree', 'prune'], { encoding: 'utf8' });
     if (pruneRes.status === 0) {
@@ -82,6 +71,29 @@ export function repairProject(projectRoot: string): RepairResult {
   } catch {
     // git error
   }
+}
+
+export function repairProject(projectRoot: string): RepairResult {
+  const root = normalizeProjectRoot(projectRoot);
+  const fixed: string[] = [];
+  const warnings: string[] = [];
+
+  // 1. Ensure .gitignore has .flightdeck/
+  try {
+    ensureFlightdeckDirIgnored(root);
+    fixed.push('verified .flightdeck/ in .gitignore');
+  } catch (err) {
+    warnings.push(`failed to update .gitignore: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 2. Ensure project directories exist
+  repairDirectories(root, fixed);
+
+  // 3. Check SQLite integrity and cleanup stale running processes
+  repairSessions(root, fixed, warnings);
+
+  // 4. Prune git worktrees
+  repairWorktrees(root, fixed);
 
   return {
     ok: warnings.length === 0,
