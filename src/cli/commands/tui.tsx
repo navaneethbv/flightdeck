@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type ReactElement } from 'react';
 import { render, Box, Text, useInput } from 'ink';
 import { SessionManager } from '../../sessions/manager.js';
 import { ArgusManager } from '../../argus/manager.js';
@@ -70,7 +70,7 @@ function useSnapshot(projectRoot: string): [Snapshot, () => void] {
   return [snapshot, load];
 }
 
-function Dashboard({ projectRoot }: { projectRoot: string }): JSX.Element {
+function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
   const [snap, refresh] = useSnapshot(projectRoot);
   const [tab, setTab] = useState<'sessions' | 'memory' | 'watchdog'>('sessions');
 
