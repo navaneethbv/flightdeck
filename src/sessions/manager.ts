@@ -6,6 +6,7 @@ import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
 import type { HarnessKind, Session, SessionPolicy } from '../core/types.js';
 import { adapters } from './harness.js';
+import { TelemetryCollector } from './telemetry.js';
 import { log } from '../core/logger.js';
 
 export interface CreateSessionOptions {
@@ -133,7 +134,7 @@ export class SessionManager {
     let logStream: fs.WriteStream | null = null;
 
     const args = opts.headless
-      ? adapter.headlessArgs(opts.prompt ?? '', { autonomy: opts.autonomy })
+      ? adapter.sessionArgs(opts.prompt ?? '', { autonomy: opts.autonomy })
       : adapter.interactiveArgs();
 
     log.info(`starting session ${session.id} harness=${session.harness} headless=${opts.headless ?? false} cwd=${cwd}`);
@@ -159,16 +160,30 @@ export class SessionManager {
         logStream.on('error', (err) => {
           log.error(`session ${session.id} log stream error: ${err.message}`);
         });
+        const collector = new TelemetryCollector(this.projectRoot, session.id, {
+          parseLine: adapter.telemetry,
+          renderLine: adapter.renderLine,
+        });
         child.stdout?.on('data', (d) => {
           try {
-            logStream?.write(d);
+            const text = collector.feed(d.toString(), 'stdout');
+            if (text) logStream?.write(text);
           } catch {
             // ignore
           }
         });
         child.stderr?.on('data', (d) => {
           try {
-            logStream?.write(d);
+            const text = collector.feed(d.toString(), 'stderr');
+            if (text) logStream?.write(text);
+          } catch {
+            // ignore
+          }
+        });
+        child.on('exit', () => {
+          try {
+            const text = collector.flush();
+            if (text) logStream?.write(text);
           } catch {
             // ignore
           }
@@ -273,7 +288,13 @@ export class SessionManager {
   }
 
   getLogs(id: string, tailLines = 100): string {
-    const logPath = path.join(this.projectRoot, '.flightdeck', 'logs', 'sessions', `${id}.log`);
+    const logDir = path.resolve(this.projectRoot, '.flightdeck', 'logs', 'sessions');
+    const logPath = path.resolve(logDir, `${id}.log`);
+    // Fail closed if the id ever resolves outside the session log directory;
+    // path traversal must never turn this into an arbitrary file read.
+    if (!logPath.startsWith(`${logDir}${path.sep}`)) {
+      return '';
+    }
     if (!fs.existsSync(logPath)) {
       return '';
     }

@@ -1,5 +1,12 @@
 import { Command } from 'commander';
-import { useEffect, useState, useCallback, type ReactElement } from 'react';
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  type ReactElement,
+  type MutableRefObject,
+} from 'react';
 import { render, Box, Text, useInput } from 'ink';
 import { SessionManager } from '../../sessions/manager.js';
 import { ArgusManager } from '../../argus/manager.js';
@@ -17,10 +24,15 @@ interface Snapshot {
   notes: ReturnType<NotesStore['list']>;
   tables: ReturnType<TablesStore['listTables']>;
   hungSessions: ReturnType<WatchdogManager['listHung']>;
+  logTarget: { id: string; name: string } | null;
+  logTail: string;
+  logError: string | null;
   tick: number;
 }
 
-function useSnapshot(projectRoot: string): [Snapshot, () => void] {
+function useSnapshot(
+  projectRoot: string
+): [Snapshot, () => void, MutableRefObject<number>] {
   const [snapshot, setSnapshot] = useState<Snapshot>({
     sessions: [],
     argus: [],
@@ -29,8 +41,13 @@ function useSnapshot(projectRoot: string): [Snapshot, () => void] {
     notes: [],
     tables: [],
     hungSessions: [],
+    logTarget: null,
+    logTail: '',
+    logError: null,
     tick: 0,
   });
+
+  const logIndexRef = useRef(0);
 
   const load = useCallback((): void => {
     try {
@@ -41,19 +58,40 @@ function useSnapshot(projectRoot: string): [Snapshot, () => void] {
       const tablesStore = new TablesStore(projectRoot);
       const watchdog = new WatchdogManager(projectRoot);
 
+      const sessionRows = sessions.list();
+      const count = sessionRows.length;
+      if (count > 0 && logIndexRef.current >= count) {
+        logIndexRef.current = count - 1;
+      }
+      const target =
+        count > 0 ? { id: sessionRows[logIndexRef.current].id, name: sessionRows[logIndexRef.current].name } : null;
+
+      let logTail = '';
+      let logError: string | null = null;
+      if (target) {
+        try {
+          logTail = sessions.getLogs(target.id, 50);
+        } catch (err) {
+          logError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
       const argus = argusManager.list();
       const children: Snapshot['children'] = {};
       for (const a of argus) {
         children[a.id] = argusManager.fleet(a.id).children;
       }
       setSnapshot((prev) => ({
-        sessions: sessions.list(),
+        sessions: sessionRows,
         argus,
         children,
         messages: messaging.list({ limit: 12 }),
         notes: notesStore.list(),
         tables: tablesStore.listTables(),
         hungSessions: watchdog.listHung(300),
+        logTarget: target,
+        logTail,
+        logError,
         tick: prev.tick + 1,
       }));
     } catch {
@@ -67,24 +105,42 @@ function useSnapshot(projectRoot: string): [Snapshot, () => void] {
     return () => clearInterval(timer);
   }, [load]);
 
-  return [snapshot, load];
+  return [snapshot, load, logIndexRef];
 }
 
 function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
-  const [snap, refresh] = useSnapshot(projectRoot);
-  const [tab, setTab] = useState<'sessions' | 'memory' | 'watchdog'>('sessions');
+  const [snap, refresh, logIndexRef] = useSnapshot(projectRoot);
+  const [tab, setTab] = useState<'sessions' | 'memory' | 'watchdog' | 'logs'>('sessions');
 
   useInput((input, key) => {
     if (input === 'q' || key.escape) process.exit(0);
     if (input === '1') setTab('sessions');
     if (input === '2') setTab('memory');
     if (input === '3') setTab('watchdog');
+    if (input === '4') setTab('logs');
     if (key.tab) {
       setTab((prev) =>
-        prev === 'sessions' ? 'memory' : prev === 'memory' ? 'watchdog' : 'sessions'
+        prev === 'sessions'
+          ? 'memory'
+          : prev === 'memory'
+          ? 'watchdog'
+          : prev === 'watchdog'
+          ? 'logs'
+          : 'sessions'
       );
     }
     if (input === 'r') refresh();
+    if (tab === 'logs') {
+      const count = snap.sessions.length;
+      if (count > 0 && key.leftArrow) {
+        logIndexRef.current = (logIndexRef.current - 1 + count) % count;
+        refresh();
+      }
+      if (count > 0 && key.rightArrow) {
+        logIndexRef.current = (logIndexRef.current + 1) % count;
+        refresh();
+      }
+    }
   });
 
   return (
@@ -97,7 +153,7 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
           <Text dimColor>{projectRoot}</Text>
         </Box>
         <Box>
-          <Text dimColor>{`refresh #${snap.tick} (press 1,2,3,tab to switch; r=refresh, q=quit)`}</Text>
+          <Text dimColor>{`refresh #${snap.tick} (press 1-4,tab to switch; r=refresh, q=quit)`}</Text>
         </Box>
       </Box>
 
@@ -115,6 +171,10 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
           {tab === 'watchdog'
             ? `[3: Watchdog (${snap.hungSessions.length} alerts)]`
             : ` 3: Watchdog (${snap.hungSessions.length}) `}
+        </Text>
+        <Text>  </Text>
+        <Text bold color={tab === 'logs' ? 'green' : 'dim'}>
+          {tab === 'logs' ? '[4: Session Log Tail]' : ' 4: Session Log Tail '}
         </Text>
       </Box>
 
@@ -250,6 +310,33 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
               ))
             )}
           </Box>
+        </Box>
+      )}
+
+      {tab === 'logs' && (
+        <Box flexDirection="column">
+          <Text bold underline color="white">
+            Session Log Tail
+          </Text>
+          {snap.logTarget ? (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text>
+                {'  tailing '}
+                <Text bold>{snap.logTarget.name}</Text>
+                <Text dimColor>{` (${snap.logTarget.id.slice(0, 8)})`}</Text>
+              </Text>
+              <Text dimColor>{'  ←/→ to select another session'}</Text>
+            </Box>
+          ) : (
+            <Text dimColor>{'  (no sessions to tail)'}</Text>
+          )}
+          {snap.logError ? (
+            <Text color="red">{`  Could not read logs: ${snap.logError}`}</Text>
+          ) : snap.logTail ? (
+            <Text dimColor>{snap.logTail}</Text>
+          ) : (
+            <Text dimColor>{'  (no log output recorded for this session)'}</Text>
+          )}
         </Box>
       )}
     </Box>

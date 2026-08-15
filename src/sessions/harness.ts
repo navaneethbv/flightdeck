@@ -4,6 +4,17 @@ import path from 'node:path';
 import { cliEntryPath } from '../core/cliEntry.js';
 import { loadConfig } from '../core/config.js';
 import type { HarnessKind, Session } from '../core/types.js';
+import {
+  parseClaudeLine,
+  parseCodexLine,
+  parseGeminiLine,
+  parseOpencodeLine,
+  renderClaudeLine,
+  renderCodexLine,
+  renderGeminiLine,
+  renderOpencodeLine,
+  type TelemetryExtraction,
+} from './telemetry.js';
 
 export interface HarnessAdapter {
   kind: HarnessKind;
@@ -13,7 +24,18 @@ export interface HarnessAdapter {
   profileEnv(session: Session, extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   interactiveArgs(): string[];
   headlessArgs(prompt: string, opts: { autonomy?: boolean }): string[];
+  /**
+   * Args for headless session spawns, chosen so model and usage can be parsed
+   * from the output stream. Differs from `headlessArgs` (used by playbook
+   * `llm` steps, which keep plain text) only where the harness needs a
+   * structured output format to report usage.
+   */
+  sessionArgs(prompt: string, opts: { autonomy?: boolean }): string[];
   writeMcpConfig(session: Session, worktreeDir: string, extraEnv?: Record<string, string>): void;
+  /** Extract telemetry fields from one line of harness output. */
+  telemetry(line: string): TelemetryExtraction | null;
+  /** Render one line into readable log text, or null to suppress it. */
+  renderLine(line: string, stream: 'stdout' | 'stderr'): string | null;
 }
 
 function which(binary: string): boolean {
@@ -82,6 +104,13 @@ const claude: HarnessAdapter = {
     if (opts.autonomy) args.push('--permission-mode', 'acceptEdits');
     return args;
   },
+  sessionArgs: (prompt, opts) => {
+    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+    if (opts.autonomy) args.push('--permission-mode', 'acceptEdits');
+    return args;
+  },
+  telemetry: parseClaudeLine,
+  renderLine: renderClaudeLine,
   writeMcpConfig(session, worktreeDir, extraEnv) {
     writeJson(path.join(worktreeDir, '.mcp.json'), mcpJsonShape(session, worktreeDir, extraEnv));
   },
@@ -103,6 +132,12 @@ const codex: HarnessAdapter = {
     const args = ['exec', '--json', prompt];
     return args;
   },
+  sessionArgs: (prompt, _opts) => {
+    const args = ['exec', '--json', prompt];
+    return args;
+  },
+  telemetry: parseCodexLine,
+  renderLine: renderCodexLine,
   writeMcpConfig(session, worktreeDir, extraEnv) {
     writeJson(path.join(worktreeDir, 'mcp.json'), mcpJsonShape(session, worktreeDir, extraEnv));
   },
@@ -125,6 +160,13 @@ const opencode: HarnessAdapter = {
     if (opts.autonomy) args.push('--permission', 'allow');
     return args;
   },
+  sessionArgs: (prompt, opts) => {
+    const args = ['run', '--format', 'json', '--print-logs', prompt];
+    if (opts.autonomy) args.push('--permission', 'allow');
+    return args;
+  },
+  telemetry: parseOpencodeLine,
+  renderLine: renderOpencodeLine,
   writeMcpConfig(session, worktreeDir, extraEnv) {
     const srv = mcpServerArgs(session, extraEnv);
     const cfg = {
@@ -161,6 +203,13 @@ const gemini: HarnessAdapter = {
     if (opts.autonomy) args.push('--auto-approve');
     return args;
   },
+  sessionArgs: (prompt, opts) => {
+    const args = ['run', prompt];
+    if (opts.autonomy) args.push('--auto-approve');
+    return args;
+  },
+  telemetry: parseGeminiLine,
+  renderLine: renderGeminiLine,
   writeMcpConfig(session, worktreeDir, extraEnv) {
     writeJson(path.join(worktreeDir, '.mcp.json'), mcpJsonShape(session, worktreeDir, extraEnv));
     const geminiDir = path.join(worktreeDir, '.gemini');
