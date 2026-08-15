@@ -28,6 +28,20 @@ import type { Session } from '../core/types.js';
  */
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Session ids are minted with crypto.randomUUID, so a well-formed id is a
+ * UUID. Anything else in a /api/sessions/<id>/<action> path is rejected before
+ * it can be turned into a filesystem path, closing the traversal hole in the
+ * raw request target.
+ */
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sessionIdFromPath(pathname: string, suffix: string): string | null {
+  if (!pathname.startsWith('/api/sessions/') || !pathname.endsWith(suffix)) return null;
+  const id = pathname.slice('/api/sessions/'.length, -suffix.length);
+  return SESSION_ID_RE.test(id) ? id : null;
+}
+
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -307,8 +321,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': Buffer.byteLength(json),
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Flightdeck-Token',
     });
     res.end(json);
   }
@@ -350,11 +362,9 @@ export function createWebServer(opts: WebServerOptions = {}): {
 
   const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Flightdeck-Token',
-      });
+      // No CORS headers are sent: the dashboard is same-origin only, and a
+      // cross-origin site must not be able to read any /api/* response.
+      res.writeHead(204);
       res.end();
       return;
     }
@@ -375,7 +385,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
       });
       res.write(`data: ${JSON.stringify({ type: 'connected', timestamp: Date.now() })}\n\n`);
       sseClients.add(res);
@@ -424,7 +433,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
 
     if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/stop') && req.method === 'POST') {
       try {
-        const id = pathname.slice('/api/sessions/'.length, -'/stop'.length);
+        const id = sessionIdFromPath(pathname, '/stop');
+        if (!id) throw new Error('invalid session id');
         const sm = new SessionManager(projectRoot);
         await sm.stopSession(id);
         broadcastUpdate();
@@ -437,7 +447,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
 
     if (pathname.startsWith('/api/sessions/') && pathname.endsWith('/logs') && req.method === 'GET') {
       try {
-        const id = pathname.slice('/api/sessions/'.length, -'/logs'.length);
+        const id = sessionIdFromPath(pathname, '/logs');
+        if (!id) throw new Error('invalid session id');
         const sm = new SessionManager(projectRoot);
         const logs = sm.getLogs(id, 300);
         sendJson(res, 200, { id, logs });

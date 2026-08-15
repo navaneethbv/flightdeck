@@ -273,7 +273,13 @@ export class SessionManager {
   }
 
   getLogs(id: string, tailLines = 100): string {
-    const logPath = path.join(this.projectRoot, '.flightdeck', 'logs', 'sessions', `${id}.log`);
+    const logDir = path.resolve(this.projectRoot, '.flightdeck', 'logs', 'sessions');
+    const logPath = path.resolve(logDir, `${id}.log`);
+    // Fail closed if the id ever resolves outside the session log directory;
+    // path traversal must never turn this into an arbitrary file read.
+    if (!logPath.startsWith(`${logDir}${path.sep}`)) {
+      return '';
+    }
     if (!fs.existsSync(logPath)) {
       return '';
     }

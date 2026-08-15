@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { makeRepo } from '../helpers.js';
@@ -67,6 +68,32 @@ async function pollRunStatus(
     }
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/**
+ * Send a raw HTTP request over a socket. fetch normalizes dot segments in the
+ * URL, so an attacker's traversal path can only be exercised over the raw
+ * request target, which is exactly what the server must reject.
+ */
+function rawRequest(port: number, method: string, requestTarget: string, headers: Record<string, string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      const head = [
+        `${method} ${requestTarget} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        'Connection: close',
+        ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+        '',
+        '',
+      ].join('\r\n');
+      socket.write(head);
+    });
+    let data = '';
+    socket.on('data', (chunk) => (data += chunk.toString('utf8')));
+    socket.on('error', reject);
+    socket.setTimeout(2000, () => socket.destroy());
+    socket.on('close', () => resolve(data));
+  });
 }
 
 describe('Web GUI Server', () => {
@@ -457,6 +484,71 @@ describe('Web GUI Server', () => {
       expect(replay.status).toBe(404);
     } finally {
       await server.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects path traversal in session id routes and never grants cross-origin reads', async () => {
+    const fixture = makeRepo();
+    const { server, port, token } = await startServer({ projectRoot: fixture.root });
+
+    try {
+      // An attacker's raw request target with .. segments reaches the server
+      // intact; the id must be rejected before it becomes a filesystem path.
+      const traversal = `${'../'.repeat(20)}etc/secret`;
+      const logsRaw = await rawRequest(port, 'GET', `/api/sessions/${traversal}/logs`, {
+        'X-Flightdeck-Token': token,
+      });
+      expect(logsRaw).toMatch(/^HTTP\/1\.1 400 /);
+      expect(logsRaw).toContain('invalid session id');
+      expect(logsRaw).not.toContain('SECRET');
+
+      const stopRaw = await rawRequest(port, 'POST', `/api/sessions/${traversal}/stop`, {
+        'X-Flightdeck-Token': token,
+      });
+      expect(stopRaw).toMatch(/^HTTP\/1\.1 400 /);
+      expect(stopRaw).toContain('invalid session id');
+
+      // A well-formed but unknown id is not a traversal: it yields empty logs.
+      const unknown = await fetch(
+        `${base(port)}/api/sessions/00000000-0000-0000-0000-000000000000/logs`,
+        authed(token)
+      );
+      expect(unknown.status).toBe(200);
+      expect((await unknown.json()).logs).toBe('');
+
+      // No API response may carry a CORS grant, so a visited web page cannot
+      // read dashboard state cross-origin (the token would buy nothing).
+      const stateRes = await fetch(`${base(port)}/api/state`, authed(token));
+      expect(stateRes.headers.get('access-control-allow-origin')).toBeNull();
+      const opt = await rawRequest(port, 'OPTIONS', '/api/state', {
+        'X-Flightdeck-Token': token,
+      });
+      expect(opt).not.toContain('Access-Control-Allow-Origin');
+    } finally {
+      await server.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it('getLogs never reads outside the session log directory', async () => {
+    const fixture = makeRepo();
+    try {
+      const sm = new SessionManager(fixture.root);
+      const logsDir = path.join(fixture.root, '.flightdeck', 'logs', 'sessions');
+      fs.mkdirSync(logsDir, { recursive: true });
+
+      const realId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      fs.writeFileSync(path.join(logsDir, `${realId}.log`), 'real logs');
+      expect(sm.getLogs(realId)).toBe('real logs');
+
+      // Canaries just outside the directory must never be reachable, even
+      // though the paths resolve to files that really exist.
+      fs.writeFileSync(path.join(fixture.root, '.flightdeck', 'logs', 'canary.log'), 'SECRET-CANARY');
+      fs.writeFileSync(path.join(fixture.root, 'secret.log'), 'SECRET-ROOT');
+      expect(sm.getLogs('../canary')).toBe('');
+      expect(sm.getLogs('../../../secret')).toBe('');
+    } finally {
       fixture.cleanup();
     }
   });
