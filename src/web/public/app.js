@@ -452,8 +452,7 @@ async function pollToolkitRun(runId) {
     if (run.status === 'failed') return { ok: false, error: run.error || 'run failed' };
     if (
       run.status === 'awaiting_confirmation' &&
-      run.confirm &&
-      run.confirm.id &&
+      run.confirm?.id &&
       run.confirm.id !== actedConfirmId
     ) {
       actedConfirmId = run.confirm.id;

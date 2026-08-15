@@ -89,6 +89,12 @@ interface PendingRun {
   confirmOperation?: string;
 }
 
+/** Stable identity for a tool invocation, binding a confirm to tool + args. */
+function operationForTool(tool: string, args: Record<string, unknown>): string {
+  const digest = createHash('sha1').update(JSON.stringify(args ?? {})).digest('hex').slice(0, 12);
+  return `tool:${tool}:${digest}`;
+}
+
 export function createWebServer(opts: WebServerOptions = {}): {
   server: Server;
   start: () => Promise<number>;
@@ -152,12 +158,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
         run.confirmPrompt = prompt;
         run.confirmOperation = operation;
       });
-  }
-
-  /** Stable identity for a tool invocation, binding a confirm to tool + args. */
-  function operationForTool(tool: string, args: Record<string, unknown>): string {
-    const digest = createHash('sha1').update(JSON.stringify(args ?? {})).digest('hex').slice(0, 12);
-    return `tool:${tool}:${digest}`;
   }
 
   function broadcastUpdate(): void {
@@ -610,8 +610,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
     if (pathname === '/api/toolkit/confirm' && req.method === 'POST') {
       try {
         const body = await parseBody(req);
-        const confirmId = String(body.confirmId ?? '');
-        const operation = String(body.operation ?? '');
+        const confirmId = typeof body.confirmId === 'string' ? body.confirmId : '';
+        const operation = typeof body.operation === 'string' ? body.operation : '';
         const pending = pendingConfirms.get(confirmId);
         if (!pending) {
           sendError(res, 404, `no pending confirmation "${confirmId}"`);

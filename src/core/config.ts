@@ -61,9 +61,9 @@ export function loadConfig(): GlobalConfig {
   const config: GlobalConfig = {
     ...DEFAULTS,
     ...file,
-    argus: { ...DEFAULTS.argus, ...(file.argus ?? {}) },
+    argus: { ...DEFAULTS.argus, ...file.argus },
     profileDir: file.profileDir ?? {},
-    models: { ...DEFAULTS.models, ...(file.models ?? {}) },
+    models: { ...DEFAULTS.models, ...file.models },
   };
   if (!HARNESSES.includes(config.defaultHarness)) {
     config.defaultHarness = DEFAULTS.defaultHarness;

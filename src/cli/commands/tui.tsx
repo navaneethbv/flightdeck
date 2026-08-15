@@ -108,6 +108,23 @@ function useSnapshot(
   return [snapshot, load, logIndexRef];
 }
 
+const NEXT_TAB: Record<'sessions' | 'memory' | 'watchdog' | 'logs', 'sessions' | 'memory' | 'watchdog' | 'logs'> = {
+  sessions: 'memory',
+  memory: 'watchdog',
+  watchdog: 'logs',
+  logs: 'sessions',
+};
+
+function renderLogContent(snap: Snapshot): ReactElement {
+  if (snap.logError) {
+    return <Text color="red">{`  Could not read logs: ${snap.logError}`}</Text>;
+  }
+  if (snap.logTail) {
+    return <Text dimColor>{snap.logTail}</Text>;
+  }
+  return <Text dimColor>{'  (no log output recorded for this session)'}</Text>;
+}
+
 function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
   const [snap, refresh, logIndexRef] = useSnapshot(projectRoot);
   const [tab, setTab] = useState<'sessions' | 'memory' | 'watchdog' | 'logs'>('sessions');
@@ -119,15 +136,7 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
     if (input === '3') setTab('watchdog');
     if (input === '4') setTab('logs');
     if (key.tab) {
-      setTab((prev) =>
-        prev === 'sessions'
-          ? 'memory'
-          : prev === 'memory'
-          ? 'watchdog'
-          : prev === 'watchdog'
-          ? 'logs'
-          : 'sessions'
-      );
+      setTab((prev) => NEXT_TAB[prev]);
     }
     if (input === 'r') refresh();
     if (tab === 'logs') {
@@ -330,13 +339,7 @@ function Dashboard({ projectRoot }: { projectRoot: string }): ReactElement {
           ) : (
             <Text dimColor>{'  (no sessions to tail)'}</Text>
           )}
-          {snap.logError ? (
-            <Text color="red">{`  Could not read logs: ${snap.logError}`}</Text>
-          ) : snap.logTail ? (
-            <Text dimColor>{snap.logTail}</Text>
-          ) : (
-            <Text dimColor>{'  (no log output recorded for this session)'}</Text>
-          )}
+          {renderLogContent(snap)}
         </Box>
       )}
     </Box>

@@ -83,7 +83,7 @@ function tryParseJson(line: string): Record<string, unknown> | null {
  */
 export function parseClaudeLine(line: string): TelemetryExtraction | null {
   const event = tryParseJson(line);
-  if (!event || event.type !== 'result') return null;
+  if (event?.type !== 'result') return null;
   const usage = (event.usage ?? {}) as Record<string, unknown>;
   if (typeof usage.input_tokens !== 'number') return null;
   return {
@@ -103,7 +103,7 @@ export function parseClaudeLine(line: string): TelemetryExtraction | null {
  */
 export function parseCodexLine(line: string): TelemetryExtraction | null {
   const event = tryParseJson(line);
-  if (!event || event.type !== 'turn.completed') return null;
+  if (event?.type !== 'turn.completed') return null;
   const usage = (event.usage ?? {}) as Record<string, unknown>;
   if (typeof usage.input_tokens !== 'number') return null;
   const cacheWrite = typeof usage.cache_write_input_tokens === 'number' ? (usage.cache_write_input_tokens as number) : 0;
@@ -128,7 +128,7 @@ export function parseOpencodeLine(line: string): TelemetryExtraction | null {
     return { model: modelMatch[1] };
   }
   const event = tryParseJson(line);
-  if (!event || event.type !== 'step_finish') return null;
+  if (event?.type !== 'step_finish') return null;
   const part = (event.part ?? {}) as Record<string, unknown>;
   const tokens = (part.tokens ?? {}) as Record<string, unknown>;
   if (typeof tokens.input !== 'number') return null;
@@ -147,6 +147,7 @@ export function parseOpencodeLine(line: string): TelemetryExtraction | null {
  * adapter declares a parser that always reports nothing. A legitimate null.
  */
 export function parseGeminiLine(_line: string): TelemetryExtraction | null {
+  // Gemini CLI does not emit structured token metrics on stdout.
   return null;
 }
 
@@ -163,7 +164,7 @@ export function parseGeminiLine(_line: string): TelemetryExtraction | null {
 export function renderClaudeLine(line: string, stream: 'stdout' | 'stderr'): string | null {
   if (stream !== 'stdout') return null;
   const event = tryParseJson(line);
-  if (!event || event.type !== 'assistant') return null;
+  if (event?.type !== 'assistant') return null;
   const content = (event.message as { content?: unknown } | undefined)?.content;
   if (Array.isArray(content)) {
     const texts = content
@@ -179,7 +180,7 @@ export function renderClaudeLine(line: string, stream: 'stdout' | 'stderr'): str
 export function renderCodexLine(line: string, stream: 'stdout' | 'stderr'): string | null {
   if (stream !== 'stdout') return null;
   const event = tryParseJson(line);
-  if (!event || event.type !== 'item.completed') return null;
+  if (event?.type !== 'item.completed') return null;
   const item = (event.item ?? {}) as Record<string, unknown>;
   if (item.type !== 'agent_message' || typeof item.text !== 'string') return null;
   return item.text;
@@ -189,7 +190,7 @@ export function renderCodexLine(line: string, stream: 'stdout' | 'stderr'): stri
 export function renderOpencodeLine(line: string, stream: 'stdout' | 'stderr'): string | null {
   if (stream !== 'stdout') return null;
   const event = tryParseJson(line);
-  if (!event || event.type !== 'text') return null;
+  if (event?.type !== 'text') return null;
   const part = (event.part ?? {}) as Record<string, unknown>;
   return typeof part.text === 'string' ? part.text : null;
 }
@@ -216,7 +217,7 @@ export function isUsefulExtraction(extraction: TelemetryExtraction | null): extr
 function rowToTelemetry(row: Record<string, unknown>): SessionTelemetry {
   return {
     sessionId: String(row.session_id),
-    model: row.model === null ? null : String(row.model),
+    model: typeof row.model === 'string' ? row.model : null,
     inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
     outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
     cachedTokens: row.cached_tokens === null ? null : Number(row.cached_tokens),
