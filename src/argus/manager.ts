@@ -40,13 +40,20 @@ function rowToArgus(row: Record<string, unknown>): Argus {
   };
 }
 
+function trimHyphens(str: string): string {
+  let start = 0;
+  let end = str.length;
+  while (start < end && str[start] === '-') start++;
+  while (end > start && str[end - 1] === '-') end--;
+  return str.slice(start, end);
+}
+
 function slugify(title: string, maxLen = 40): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '')
-    .slice(0, maxLen);
+  const slug = trimHyphens(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+  ).slice(0, maxLen);
   return slug || 'task';
 }
 

@@ -22,7 +22,7 @@ export interface JiraCredentialLookup {
 
 function cleanDomain(domain: string): string {
   let end = domain.length;
-  while (end > 0 && domain.charCodeAt(end - 1) === 47 /* '/' */) {
+  while (end > 0 && domain.codePointAt(end - 1) === 47 /* '/' */) {
     end--;
   }
   return domain.slice(0, end);

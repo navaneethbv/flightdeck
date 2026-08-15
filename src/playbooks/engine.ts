@@ -10,6 +10,12 @@ import { resolveSecret } from '../secrets/keychain.js';
 
 export const MAX_PLAYBOOK_DEPTH = 10;
 
+function toSafeString(val: unknown): string {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  return '';
+}
+
 export interface EngineServices {
   projectRoot: string;
   tables: TablesStore;
@@ -342,28 +348,27 @@ export class PlaybookEngine {
 
   private execNote(step: Extract<Step, { type: 'note' }>, tl: (v: unknown) => unknown): StepResult {
     try {
-      const getStr = (val: unknown): string => (typeof val === 'string' ? val : (typeof val === 'number' || typeof val === 'boolean' ? String(val) : ''));
       switch (step.operation) {
         case 'create': {
-          const note = this.services.notes.createNote(getStr(tl(step.title)), getStr(tl(step.body)));
+          const note = this.services.notes.createNote(toSafeString(tl(step.title)), toSafeString(tl(step.body)));
           return { status: 'ok', output: note };
         }
         case 'read': {
-          const noteId = getStr(tl(step.noteId));
+          const noteId = toSafeString(tl(step.noteId));
           const note = this.services.notes.readNote(noteId);
           if (!note) throw new Error(`note "${noteId}" not found`);
           return { status: 'ok', output: note };
         }
         case 'update': {
-          const noteId = getStr(tl(step.noteId));
+          const noteId = toSafeString(tl(step.noteId));
           const note = this.services.notes.updateNote(noteId, {
-            title: step.title !== undefined ? getStr(tl(step.title)) : undefined,
-            body: step.body !== undefined ? getStr(tl(step.body)) : undefined,
+            title: step.title !== undefined ? toSafeString(tl(step.title)) : undefined,
+            body: step.body !== undefined ? toSafeString(tl(step.body)) : undefined,
           });
           return { status: 'ok', output: note };
         }
         case 'search':
-          return { status: 'ok', output: this.services.notes.searchNotes(getStr(tl(step.query))) };
+          return { status: 'ok', output: this.services.notes.searchNotes(toSafeString(tl(step.query))) };
         case 'list':
           return { status: 'ok', output: this.services.notes.listNotes() };
         default:

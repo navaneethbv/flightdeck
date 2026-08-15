@@ -48,6 +48,81 @@ function parseInputs(value: unknown): Playbook['inputs'] {
   });
 }
 
+interface StepBase {
+  id: string;
+  retries?: number;
+  timeout?: number;
+  onError: 'continue' | 'abort';
+}
+
+function parseHttpStep(s: Record<string, unknown>, id: string, base: StepBase): Step {
+  requireString(s, 'url', id);
+  const rawMethod = typeof s.method === 'string' ? s.method.toUpperCase() : 'GET';
+  return {
+    ...base,
+    type: 'http',
+    method: rawMethod as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    url: String(s.url),
+    headers: optMap(s.headers) as Record<string, string> | undefined,
+    body: s.body,
+  };
+}
+
+function parseDataStep(s: Record<string, unknown>, id: string, base: StepBase): Step {
+  requireString(s, 'table', id);
+  requireString(s, 'operation', id);
+  return {
+    ...base,
+    type: 'data',
+    table: String(s.table),
+    operation: String(s.operation) as StepDataOperation,
+    columns: Array.isArray(s.columns) ? (s.columns as { name: string; type: string }[]) : undefined,
+    data: optMap(s.data),
+    where: optMap(s.where),
+    rowid: numOrUndef(s.rowid),
+    fn: optString(s.fn) as StepDataOperationAggregate | undefined,
+    column: optString(s.column),
+    groupBy: optString(s.group_by),
+    limit: numOrUndef(s.limit),
+  };
+}
+
+function parseNoteStep(s: Record<string, unknown>, id: string, base: StepBase): Step {
+  requireString(s, 'operation', id);
+  return {
+    ...base,
+    type: 'note',
+    operation: String(s.operation) as StepNoteOperation,
+    title: optString(s.title),
+    body: optString(s.body),
+    noteId: optString(s.note_id),
+    query: optString(s.query),
+  };
+}
+
+function parseConditionStep(s: Record<string, unknown>, id: string, label: string, base: StepBase): Step {
+  requireString(s, 'if', id);
+  if (!Array.isArray(s.then)) throw new Error(`step "${id}": "then" must be an array`);
+  return {
+    ...base,
+    type: 'condition',
+    if: String(s.if),
+    then: (s.then as unknown[]).map((t) => parseStep(t, `${label}.${id}.then`)),
+    else: Array.isArray(s.else) ? (s.else as unknown[]).map((t) => parseStep(t, `${label}.${id}.else`)) : undefined,
+  };
+}
+
+function parseParallelStep(s: Record<string, unknown>, id: string, label: string, base: StepBase): Step {
+  if (!Array.isArray(s.branches)) throw new Error(`step "${id}": "branches" must be an array`);
+  return {
+    ...base,
+    type: 'parallel',
+    branches: (s.branches as unknown[][]).map((branch, i) =>
+      branch.map((t) => parseStep(t, `${label}.${id}.branch${i}`))
+    ),
+  };
+}
+
 function parseStep(raw: unknown, label: string): Step {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(`invalid step in "${label}": expected a mapping`);
@@ -56,7 +131,7 @@ function parseStep(raw: unknown, label: string): Step {
   const id = typeof s.id === 'string' ? s.id : null;
   if (!id) throw new Error(`invalid step in "${label}": missing "id"`);
   const type = typeof s.type === 'string' ? s.type : '';
-  const base = {
+  const base: StepBase = {
     id,
     retries: numOrUndef(s.retries),
     timeout: numOrUndef(s.timeout),
@@ -70,76 +145,27 @@ function parseStep(raw: unknown, label: string): Step {
     case 'manual':
       requireString(s, 'prompt', id);
       return { ...base, type, prompt: String(s.prompt) };
-    case 'http': {
-      requireString(s, 'url', id);
-      const rawMethod = typeof s.method === 'string' ? s.method.toUpperCase() : 'GET';
-      return {
-        ...base,
-        type,
-        method: rawMethod as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-        url: String(s.url),
-        headers: optMap(s.headers) as Record<string, string> | undefined,
-        body: s.body,
-      };
-    }
+    case 'http':
+      return parseHttpStep(s, id, base);
     case 'mcp':
       requireString(s, 'tool', id);
       return { ...base, type, tool: String(s.tool), arguments: optMap(s.arguments) ?? optMap(s.args) };
     case 'data':
-      requireString(s, 'table', id);
-      requireString(s, 'operation', id);
-      return {
-        ...base,
-        type,
-        table: String(s.table),
-        operation: String(s.operation) as StepDataOperation,
-        columns: Array.isArray(s.columns) ? (s.columns as { name: string; type: string }[]) : undefined,
-        data: optMap(s.data),
-        where: optMap(s.where),
-        rowid: numOrUndef(s.rowid),
-        fn: optString(s.fn) as StepDataOperationAggregate | undefined,
-        column: optString(s.column),
-        groupBy: optString(s.group_by),
-        limit: numOrUndef(s.limit),
-      };
+      return parseDataStep(s, id, base);
     case 'message':
       requireString(s, 'body', id);
       return { ...base, type, to: optString(s.to), body: String(s.body) };
     case 'note':
-      requireString(s, 'operation', id);
-      return {
-        ...base,
-        type,
-        operation: String(s.operation) as StepNoteOperation,
-        title: optString(s.title),
-        body: optString(s.body),
-        noteId: optString(s.note_id),
-        query: optString(s.query),
-      };
+      return parseNoteStep(s, id, base);
     case 'playbook':
       requireString(s, 'name', id);
       return { ...base, type, name: String(s.name), args: optMap(s.args) };
     case 'wait':
       return { ...base, type, seconds: numOrUndef(s.seconds) ?? 1 };
     case 'condition':
-      requireString(s, 'if', id);
-      if (!Array.isArray(s.then)) throw new Error(`step "${id}": "then" must be an array`);
-      return {
-        ...base,
-        type,
-        if: String(s.if),
-        then: (s.then as unknown[]).map((t) => parseStep(t, `${label}.${id}.then`)),
-        else: Array.isArray(s.else) ? (s.else as unknown[]).map((t) => parseStep(t, `${label}.${id}.else`)) : undefined,
-      };
+      return parseConditionStep(s, id, label, base);
     case 'parallel':
-      if (!Array.isArray(s.branches)) throw new Error(`step "${id}": "branches" must be an array`);
-      return {
-        ...base,
-        type,
-        branches: (s.branches as unknown[][]).map((branch, i) =>
-          branch.map((t) => parseStep(t, `${label}.${id}.branch${i}`))
-        ),
-      };
+      return parseParallelStep(s, id, label, base);
     default:
       throw new Error(`step "${id}": unknown type "${type}"`);
   }
