@@ -16,7 +16,7 @@ export function registerUi(program: Command): void {
     .action(async (opts: Opts) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        const port = parseInt(String(opts.port ?? '4173'), 10) || 4173;
+        const port = Number.parseInt(String(opts.port ?? '4173'), 10) || 4173;
 
         const webServer = createWebServer({
           port,

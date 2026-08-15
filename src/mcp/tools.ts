@@ -794,7 +794,7 @@ export class ToolRegistry {
         // dir missing
       }
     }
-    return [...names].sort();
+    return [...names].sort((a, b) => a.localeCompare(b));
   }
 
   private readPlaybook(name: string): Playbook | null {

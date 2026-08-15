@@ -143,7 +143,7 @@ export function registerSession(program: Command): void {
     .action((id: string, opts: Record<string, string | boolean>) => {
       try {
         const manager = new SessionManager(projectRootOf(opts.project as string | undefined));
-        const logs = manager.getLogs(id, parseInt(String(opts.tail), 10) || 100);
+        const logs = manager.getLogs(id, Number.parseInt(String(opts.tail), 10) || 100);
         process.stdout.write(logs ? logs + (logs.endsWith('\n') ? '' : '\n') : 'no logs found\n');
       } catch (err) {
         handleError(err);
@@ -161,7 +161,7 @@ export function registerSession(program: Command): void {
         const projectRoot = projectRootOf(opts.project as string | undefined);
         process.stdout.write(`following logs for session ${id} (Ctrl+C to detach)...\n\n`);
         const handle = followSessionLogs(projectRoot, id, {
-          tailLines: parseInt(String(opts.tail), 10) || 50,
+          tailLines: Number.parseInt(String(opts.tail), 10) || 50,
           onChunk: (chunk) => process.stdout.write(chunk),
           onExit: (status) => {
             process.stdout.write(`\n[session ${id} exited with status ${status}]\n`);

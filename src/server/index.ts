@@ -230,7 +230,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         hungSessions: watchdog.listHung(300),
       },
       worktrees,
-      playbooks: [...playbookNames].sort(),
+      playbooks: [...playbookNames].sort((a, b) => a.localeCompare(b)),
       defaultHarness: getDefaultHarness(),
     };
   }

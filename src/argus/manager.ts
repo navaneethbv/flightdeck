@@ -44,7 +44,8 @@ function slugify(title: string, maxLen = 40): string {
   const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
     .slice(0, maxLen);
   return slug || 'task';
 }

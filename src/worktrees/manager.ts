@@ -94,7 +94,7 @@ export function runPostCreateHooks(projectRoot: string, worktreeDir: string, ses
   const scripts = fs
     .readdirSync(dir)
     .filter((f) => f.endsWith('.sh'))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     FLIGHTDECK_WORKTREE: worktreeDir,
@@ -164,7 +164,7 @@ export function worktreeStatus(
   let ahead = 0;
   const aheadRes = spawnSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD', '^main'], { encoding: 'utf8' });
   if (aheadRes.status === 0) {
-    ahead = parseInt(aheadRes.stdout.trim(), 10) || 0;
+    ahead = Number.parseInt(aheadRes.stdout.trim(), 10) || 0;
   }
 
   return {

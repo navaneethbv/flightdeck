@@ -20,8 +20,16 @@ export interface JiraCredentialLookup {
   token: string | null;
 }
 
+function cleanDomain(domain: string): string {
+  let end = domain.length;
+  while (end > 0 && domain.charCodeAt(end - 1) === 47 /* '/' */) {
+    end--;
+  }
+  return domain.slice(0, end);
+}
+
 function apiUrl(config: JiraConfig, path: string): string {
-  const domain = config.domain.replace(/\/+$/, '');
+  const domain = cleanDomain(config.domain);
   return `https://${domain}/rest/api/${path}`;
 }
 
@@ -58,7 +66,7 @@ export async function fetchJiraIssues(
       };
     }[];
   };
-  const domain = config.domain.replace(/\/+$/, '');
+  const domain = cleanDomain(config.domain);
   return (data.issues ?? []).map((issue) => ({
     key: issue.key,
     summary: wrapUntrustedContent(issue.fields.summary ?? ''),

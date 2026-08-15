@@ -93,7 +93,7 @@ export function registerPlaybooks(program: Command): void {
             // missing dir
           }
         }
-        const list = [...names].sort();
+        const list = [...names].sort((a, b) => a.localeCompare(b));
         if (opts.json) printJson(list);
         else for (const n of list) process.stdout.write(`${n}\n`);
       } catch (err) {
