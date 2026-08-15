@@ -21,6 +21,15 @@ const GHOSTS = [
   'TiltRun',
 ];
 
+// Single seam into the fleet panel. Child B owns that panel (model, spend and
+// progress rendering); if the client function is renamed, this constant is the
+// only line in the test that needs to change.
+const FLEET_RENDER_FN = 'renderFleet';
+// DOM id of the container the client fills with one card per session. Counting
+// its children is the rendered-output assertion; nothing else is coupled to the
+// card markup.
+const FLEET_CONTAINER_ID = 'sessions-container';
+
 interface ShimNode {
   children: ShimNode[];
   className: string;
@@ -85,15 +94,18 @@ function makeShimNode(): ShimNode {
 }
 
 /**
- * Runs the real served client's renderFleet against a given /api/state payload
- * with a minimal DOM shim, and reports how many session cards it produced.
- * This is the exact code path revision 1 abused to pad the fleet with invented
- * sessions, so executing it is how we lock the rule in.
+ * Runs the real served client's fleet renderer against a given /api/state
+ * payload with a minimal DOM shim, and reports how many session cards it
+ * produced. This is the exact code path revision 1 abused to pad the fleet
+ * with invented sessions, so executing it is how we lock the rule in.
+ *
+ * The renderer and container are reached only through FLEET_RENDER_FN and
+ * FLEET_CONTAINER_ID, so a rename in the client is a one-line fix here.
  */
 function runFleetRender(appJs: string, state: unknown): number {
   const container = makeShimNode();
   const documentShim = {
-    getElementById: (id: string) => (id === 'sessions-container' ? container : null),
+    getElementById: (id: string) => (id === FLEET_CONTAINER_ID ? container : null),
     createElement: () => makeShimNode(),
     addEventListener: () => {},
   };
@@ -101,7 +113,7 @@ function runFleetRender(appJs: string, state: unknown): number {
   const expose = `
     ;globalThis.__flightdeckTest = {
       setState: (s) => { state = s; },
-      renderFleet,
+      ${FLEET_RENDER_FN},
     };
   `;
   const sandbox: Record<string, unknown> = {
@@ -112,9 +124,10 @@ function runFleetRender(appJs: string, state: unknown): number {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(appJs + expose, sandbox);
-  const api = sandbox.__flightdeckTest as { setState(s: unknown): void; renderFleet(): void };
+  const api = sandbox.__flightdeckTest as { setState(s: unknown): void };
   api.setState(state);
-  api.renderFleet();
+  const render = (api as unknown as Record<string, unknown>)[FLEET_RENDER_FN] as () => void;
+  render();
   return container.children.length;
 }
 
