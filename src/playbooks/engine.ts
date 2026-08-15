@@ -129,7 +129,8 @@ export class PlaybookEngine {
   private execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown): StepResult {
     const command = String(t(step.command));
     const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
-    const out = spawnSync('/bin/bash', ['-c', command], {
+    const out = spawnSync('/bin/bash', ['-s'], {
+      input: command,
       cwd,
       encoding: 'utf8',
       timeout: step.timeout !== undefined ? step.timeout * 1000 : undefined,
