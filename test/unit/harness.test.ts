@@ -85,11 +85,45 @@ describe('Harness adapters', () => {
     expect(getAdapter('claude').headlessArgs('hi', {})).toEqual(['-p', 'hi', '--output-format', 'text']);
 
     const opencodeSession = getAdapter('opencode').sessionArgs('hi', {});
-    expect(opencodeSession).toEqual(['run', '--format', 'json', '--print-logs', 'hi']);
-    expect(getAdapter('opencode').headlessArgs('hi', {})).toEqual(['run', 'hi']);
+    expect(opencodeSession).toEqual(['run', '--format', 'json', '--print-logs', '--', 'hi']);
+    expect(getAdapter('opencode').headlessArgs('hi', {})).toEqual(['run', '--', 'hi']);
 
-    expect(getAdapter('codex').sessionArgs('hi', {})).toEqual(['exec', '--json', 'hi']);
+    expect(getAdapter('codex').sessionArgs('hi', {})).toEqual(['exec', '--json', '--', 'hi']);
+    expect(getAdapter('codex').headlessArgs('hi', {})).toEqual(['exec', '--json', '--', 'hi']);
     expect(getAdapter('gemini').sessionArgs('hi', {})).toEqual(['run', 'hi']);
+  });
+
+  it('starts an autonomous OpenCode worker with the supported auto flag', () => {
+    expect(getAdapter('opencode').sessionArgs('implement task', { autonomy: true })).toEqual([
+      'run',
+      '--format',
+      'json',
+      '--print-logs',
+      '--auto',
+      '--',
+      'implement task',
+    ]);
+  });
+
+  it('places Codex options before the prompt and grants workspace writes only in autonomy mode', () => {
+    expect(getAdapter('codex').sessionArgs('plan work', { model: 'gpt-5.6-sol' })).toEqual([
+      'exec',
+      '--json',
+      '--model',
+      'gpt-5.6-sol',
+      '--',
+      'plan work',
+    ]);
+
+    expect(getAdapter('codex').sessionArgs('implement task', { autonomy: true })).toEqual([
+      'exec',
+      '--json',
+      '--sandbox',
+      'workspace-write',
+      '--approve-for-me',
+      '--',
+      'implement task',
+    ]);
   });
 
   it('every adapter declares a telemetry extractor and a log renderer', () => {

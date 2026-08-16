@@ -129,13 +129,18 @@ const codex: HarnessAdapter = {
     return { ...env, ...extraEnv };
   },
   interactiveArgs: () => [],
-  headlessArgs: (prompt, _opts) => {
-    const args = ['exec', '--json', prompt];
+  headlessArgs: (prompt, opts) => {
+    const args = ['exec', '--json'];
+    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
+    if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   sessionArgs: (prompt, opts) => {
-    const args = ['exec', '--json', prompt];
+    const args = ['exec', '--json'];
+    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
     if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   telemetry: parseCodexLine,
@@ -158,14 +163,17 @@ const opencode: HarnessAdapter = {
   },
   interactiveArgs: () => [],
   headlessArgs: (prompt, opts) => {
-    const args = ['run', prompt];
-    if (opts.autonomy) args.push('--permission', 'allow');
+    const args = ['run'];
+    if (opts.autonomy) args.push('--auto');
+    if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   sessionArgs: (prompt, opts) => {
-    const args = ['run', '--format', 'json', '--print-logs', prompt];
-    if (opts.autonomy) args.push('--permission', 'allow');
+    const args = ['run', '--format', 'json', '--print-logs'];
+    if (opts.autonomy) args.push('--auto');
     if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   telemetry: parseOpencodeLine,
