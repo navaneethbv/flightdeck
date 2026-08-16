@@ -37,6 +37,7 @@ function rowToTask(row: Record<string, unknown>): Task {
     verdictReason: typeof row.verdict_reason === 'string' ? row.verdict_reason : null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    priority: Number(row.priority ?? 0),
   };
 }
 
@@ -123,7 +124,9 @@ export class TaskBoard {
   dispatchable(argusId: string): Task[] {
     const all = this.list(argusId);
     const done = new Set(all.filter((t) => t.status === 'done').map((t) => t.id));
-    return all.filter((t) => t.status === 'pending' && t.dependsOn.every((d) => done.has(d)));
+    return all
+      .filter((t) => t.status === 'pending' && t.dependsOn.every((d) => done.has(d)))
+      .sort((x, y) => (y.priority - x.priority) || (x.createdAt - y.createdAt));
   }
 
   private update(id: string, sets: Record<string, SQLInputValue>): Task {

@@ -64,6 +64,10 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
+      # The fleet window e2e test needs a real tmux; without it the test skips
+      # and the fleet surface would go unexercised in CI.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       # `pretest` builds first; integration and e2e specs spawn dist/cli/index.js
       # as a real child process, so a stale dist would test the previous build.
       - run: npm test

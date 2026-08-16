@@ -9,6 +9,7 @@ import { registerConfig } from './commands/config.js';
 import { registerDoctor } from './commands/doctor.js';
 import { registerWatchdog } from './commands/watchdog.js';
 import { registerTui } from './commands/tui.js';
+import { registerFleet } from './commands/fleet.js';
 import { registerUi } from './commands/ui.js';
 
 const program = new Command();
@@ -32,6 +33,7 @@ registerConfig(program);
 registerDoctor(program);
 registerWatchdog(program);
 registerTui(program);
+registerFleet(program);
 registerUi(program);
 
 try {

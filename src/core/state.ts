@@ -50,7 +50,8 @@ function migrate(db: DatabaseSync): void {
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
       last_activity_at INTEGER NOT NULL,
-      exit_code INTEGER
+      exit_code INTEGER,
+      claimed_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS notes (
@@ -149,7 +150,8 @@ function migrate(db: DatabaseSync): void {
       verdict TEXT,
       verdict_reason TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS questions (
@@ -191,6 +193,17 @@ function migrate(db: DatabaseSync): void {
   for (const col of argusColumns) {
     try {
       db.exec(`ALTER TABLE argus ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
+  const lateColumns: [string, string][] = [
+    ['sessions', 'claimed_at INTEGER'],
+    ['tasks', 'priority INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [table, col] of lateColumns) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col};`);
     } catch {
       // column already exists
     }

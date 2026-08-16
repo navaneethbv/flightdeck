@@ -54,6 +54,8 @@ export interface Task {
   verdictReason: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Higher dispatches first. Set by the human override surface. */
+  priority: number;
 }
 
 export interface Question {
@@ -84,6 +86,8 @@ export interface Session {
   endedAt: number | null;
   lastActivityAt: number;
   exitCode: number | null;
+  /** Set while a human has taken this session over in a fleet pane. */
+  claimedAt: number | null;
 }
 
 export interface Argus {
