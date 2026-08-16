@@ -3,8 +3,8 @@ import { Command } from 'commander';
 import { useEffect, useState, type ReactElement } from 'react';
 import { render, Box, Text, useInput } from 'ink';
 import { FleetManager } from '../../fleet/manager.js';
+import { FleetActions, type FleetActionResult } from '../../fleet/actions.js';
 import { Tmux } from '../../fleet/tmux.js';
-import { Override } from '../../argus/override.js';
 import { ArgusManager } from '../../argus/manager.js';
 import { TaskBoard } from '../../argus/board.js';
 import { budgetState } from '../../argus/budget.js';
@@ -86,10 +86,9 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
   useInput((input) => {
     if (input === 'q') process.exit(0);
     if (input === 'f' && snap.argusId) {
-      const manager = new ArgusManager(projectRoot);
-      new Override(projectRoot)
-        .forceReview(snap.argusId, manager)
-        .then(() => setMessage('review drained'))
+      new FleetActions(projectRoot)
+        .forceReview(snap.argusId)
+        .then((r) => setMessage(r.message))
         .catch((err: Error) => setMessage(err.message));
     }
   });
@@ -160,6 +159,18 @@ function requireTmux(): void {
   }
 }
 
+/**
+ * Explicit Argus selection for task overrides. The newest fleet is never
+ * guessed: zero fleets fail, and more than one fleet requires `--argus`.
+ */
+function resolveArgusId(projectRoot: string, argusId: string | undefined): string {
+  if (argusId !== undefined) return argusId;
+  const fleets = new ArgusManager(projectRoot).list();
+  if (fleets.length === 0) throw new Error('no argus fleet exists in this project');
+  if (fleets.length > 1) throw new Error('multiple fleets exist; pass --argus <id>');
+  return fleets[0].id;
+}
+
 export function registerFleet(program: Command): void {
   const fleet = program.command('fleet').description('tmux window onto a running fleet');
 
@@ -212,13 +223,15 @@ export function registerFleet(program: Command): void {
   fleet
     .command('claim <sessionId>')
     .description('Take over a worker in its pane')
+    .option('--json', 'output JSON')
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (sessionId: string, opts: Record<string, string | boolean>) => {
       try {
         requireTmux();
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        await new FleetManager(projectRoot).claim(sessionId);
-        console.log(`claimed ${sessionId}`);
+        const result = await new FleetActions(projectRoot).claim(sessionId);
+        if (opts.json) printJson(result);
+        else console.log(result.message);
       } catch (err) {
         handleError(err);
       }
@@ -228,13 +241,57 @@ export function registerFleet(program: Command): void {
     .command('release <sessionId>')
     .description('End a claim and return the pane to following the log')
     .option('--resume', 'restart the worker headless after releasing')
+    .option('--json', 'output JSON')
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (sessionId: string, opts: Record<string, string | boolean>) => {
       try {
         requireTmux();
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        await new FleetManager(projectRoot).release(sessionId, { resume: Boolean(opts.resume) });
-        console.log(`released ${sessionId}`);
+        const result = await new FleetActions(projectRoot).release(sessionId, Boolean(opts.resume));
+        if (opts.json) printJson(result);
+        else console.log(result.message);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  fleet
+    .command('kill <sessionId>')
+    .description('Stop a worker and block its active task while preserving the worktree')
+    .option('--yes', 'confirm the destructive action')
+    .option('--json', 'output JSON')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action(async (sessionId: string, opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        if (!opts.yes) {
+          // In a non-interactive process there is no terminal to confirm on,
+          // so the destructive action refuses without an explicit --yes.
+          if (!process.stdin.isTTY) {
+            throw new Error('refusing to kill without --yes in a non-interactive process');
+          }
+        }
+        const result = await new FleetActions(projectRoot).kill(sessionId);
+        if (opts.json) printJson(result);
+        else console.log(result.message);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  const worker = fleet.command('worker').description('Manual worker controls');
+  worker
+    .command('start')
+    .description('Spawn one worker for the highest-priority dispatchable task')
+    .requiredOption('--argus <id>', 'Argus fleet id')
+    .option('--json', 'output JSON')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action(async (opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        const result = await new FleetActions(projectRoot).spawnNext(String(opts.argus));
+        if (opts.json) printJson(result);
+        else console.log(result.message);
       } catch (err) {
         handleError(err);
       }
@@ -245,45 +302,49 @@ export function registerFleet(program: Command): void {
   const withOverride = (
     name: string,
     description: string,
-    run: (o: Override, taskId: string, argusId: string | undefined, extra: string) => void
+    run: (actions: FleetActions, taskId: string, argusId: string, extra: string) => FleetActionResult
   ): void => {
     override
       .command(`${name} <taskId> [reason]`)
       .description(description)
+      .option('--argus <id>', 'Argus fleet id (required when more than one fleet exists)')
+      .option('--json', 'output JSON')
       .option('--project <path>', 'project root (default: current directory)')
       .action((taskId: string, reason: string | undefined, opts: Record<string, string | boolean>) => {
         try {
           const projectRoot = projectRootOf(opts.project as string | undefined);
-          const argusId = new ArgusManager(projectRoot).list()[0]?.id;
-          run(new Override(projectRoot), taskId, argusId, reason ?? '');
-          console.log(`${name} ${taskId}`);
+          const argusId = resolveArgusId(projectRoot, opts.argus as string | undefined);
+          const result = run(new FleetActions(projectRoot), taskId, argusId, reason ?? '');
+          if (opts.json) printJson(result);
+          else console.log(result.message);
         } catch (err) {
           handleError(err);
         }
       });
   };
 
-  withOverride('accept', 'Force a task to done', (o, id, argusId) => o.acceptTask(id, argusId));
-  withOverride('reject', 'Force a task back to the worker', (o, id, argusId, reason) =>
-    o.rejectTask(id, reason || 'rejected by human', argusId)
+  withOverride('accept', 'Force a task to done', (a, id, argusId) => a.accept(id, argusId));
+  withOverride('reject', 'Force a task back to the worker', (a, id, argusId, reason) =>
+    a.reject(id, reason || 'rejected by human', argusId)
   );
-  withOverride('unblock', 'Return a blocked task to pending', (o, id, argusId) => o.unblockTask(id, argusId));
-  withOverride('prioritize', 'Dispatch a task first', (o, id, argusId) => o.prioritizeTask(id, argusId));
+  withOverride('unblock', 'Return a blocked task to pending', (a, id, argusId) => a.unblock(id, argusId));
+  withOverride('prioritize', 'Dispatch a task first', (a, id, argusId) => a.prioritize(id, argusId));
 
   // The console's [f] key must have a CLI equivalent: anything reachable from
   // a dashboard is reachable from the CLI.
   override
     .command('force-review')
     .description('Drain the review queue now, ignoring batching but not the budget ceiling')
+    .option('--argus <id>', 'Argus fleet id (required when more than one fleet exists)')
+    .option('--json', 'output JSON')
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (opts: Record<string, string | boolean>) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        const manager = new ArgusManager(projectRoot);
-        const argus = manager.list()[0];
-        if (!argus) throw new Error('no argus fleet exists in this project');
-        await new Override(projectRoot).forceReview(argus.id, manager);
-        console.log('review queue drained');
+        const argusId = resolveArgusId(projectRoot, opts.argus as string | undefined);
+        const result = await new FleetActions(projectRoot).forceReview(argusId);
+        if (opts.json) printJson(result);
+        else console.log(result.message);
       } catch (err) {
         handleError(err);
       }
