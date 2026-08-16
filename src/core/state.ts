@@ -50,7 +50,8 @@ function migrate(db: DatabaseSync): void {
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
       last_activity_at INTEGER NOT NULL,
-      exit_code INTEGER
+      exit_code INTEGER,
+      claimed_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS notes (
@@ -149,7 +150,8 @@ function migrate(db: DatabaseSync): void {
       verdict TEXT,
       verdict_reason TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS questions (
