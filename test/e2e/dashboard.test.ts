@@ -55,6 +55,7 @@ interface ShimNode {
   appendChild(child: ShimNode): ShimNode;
   setAttribute(key: string, value: string): void;
   querySelectorAll(selector: string): ShimNode[];
+  focus(): void;
 }
 
 function makeShimNode(tag = 'div'): ShimNode {
@@ -96,6 +97,7 @@ function makeShimNode(tag = 'div'): ShimNode {
       this.children.push(child);
       return child;
     },
+    focus() {},
     setAttribute(key, value) {
       if (key.startsWith('data-')) this.dataset[key.slice('data-'.length)] = String(value);
       else this.attributes[key] = String(value);
@@ -313,6 +315,165 @@ function readAppJs(): string {
   return fs.existsSync(distPath) ? fs.readFileSync(distPath, 'utf8') : fs.readFileSync(srcPath, 'utf8');
 }
 
+/** Poll until `predicate` holds, so un-awaited client fetches settle. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error('timed out waiting for client state');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+interface LoginHarness {
+  overlay: ShimNode;
+  tokenInput: ShimNode;
+  errorEl: ShimNode;
+  fetchCalls: { url: string; headers: Record<string, string>; status: number }[];
+  storage: Map<string, string>;
+  getToken(): string;
+  /** Functions the served client defines for the login gate. */
+  api: {
+    submitLogin(token?: string): Promise<void>;
+    lockDashboard(): void;
+    readCapabilityToken(): void;
+    authedHeaders(extra?: Record<string, string>): Record<string, string>;
+    eventsUrl(): string;
+    /** Live dashboard streams: the poll loop (1) plus the SSE stream (1). */
+    activeStreams(): number;
+  };
+}
+
+/**
+ * Loads the real served client into a vm sandbox with the login gate's DOM
+ * (overlay, token input, error line), a writable sessionStorage and a fetch
+ * shim that records every /api call. Executes the client's real boot path
+ * (readCapabilityToken -> startDashboard or showLogin), exactly as a browser
+ * would, so the login behavior under test is the shipped code.
+ */
+function loadLoginClient(
+  appJs: string,
+  opts: {
+    href: string;
+    storage?: Record<string, string>;
+    fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>;
+  }
+): LoginHarness {
+  const overlay = makeShimNode('div');
+  overlay.classList.add('login-overlay');
+  overlay.classList.add('hidden');
+  const tokenInput = makeShimNode('input');
+  const errorEl = makeShimNode('p');
+  errorEl.classList.add('login-error');
+  errorEl.classList.add('hidden');
+  const fixed: Record<string, ShimNode> = {
+    'login-overlay': overlay,
+    'login-token': tokenInput,
+    'login-error': errorEl,
+  };
+  const elements = new Map<string, ShimNode>();
+  const byId = (id: string): ShimNode => {
+    let node = elements.get(id);
+    if (!node) {
+      node = fixed[id] ?? makeShimNode('div');
+      elements.set(id, node);
+    }
+    return node;
+  };
+
+  const storage = new Map<string, string>(Object.entries(opts.storage ?? {}));
+  const fetchCalls: LoginHarness['fetchCalls'] = [];
+  let currentHref = opts.href;
+  let domContentLoaded: (() => void) | null = null;
+
+  const sandbox: Record<string, unknown> = {
+    window: {
+      location: {
+        get href() {
+          return currentHref;
+        },
+        set href(value: string) {
+          currentHref = String(value);
+        },
+      },
+      history: {
+        replaceState: (_state: unknown, _title: unknown, url: string) => {
+          currentHref = url;
+        },
+      },
+    },
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+    },
+    document: {
+      getElementById: (id: string) => byId(id),
+      createElement: (tag: string) => makeShimNode(tag),
+      body: { appendChild: () => {} },
+      querySelectorAll: () => [],
+      addEventListener: (type: string, cb: () => void) => {
+        if (type === 'DOMContentLoaded') domContentLoaded = cb;
+      },
+    },
+    fetch: async (url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const res = opts.fetchImpl
+        ? await opts.fetchImpl(String(url), init)
+        : new Response('{}', { status: 200 });
+      fetchCalls.push({ url: String(url), headers, status: res.status });
+      return res;
+    },
+    EventSource: function EventSource(_url: string) {
+      this.onmessage = null;
+    },
+    setInterval: () => 0,
+    setTimeout: () => 0,
+    clearInterval: () => {},
+    clearTimeout: () => {},
+    globalThis: null,
+  };
+  sandbox.globalThis = sandbox;
+
+  const expose = `
+    ;globalThis.__flightdeckTest = {
+      submitLogin: (t) => submitLogin(t),
+      lockDashboard,
+      readCapabilityToken,
+      authedHeaders,
+      eventsUrl,
+      getToken: () => capabilityToken,
+      activeStreams: () => (pollTimer !== null ? 1 : 0) + (eventSource !== null ? 1 : 0),
+    };
+  `;
+  vm.createContext(sandbox);
+  vm.runInContext(appJs + expose, sandbox);
+  const api = sandbox.__flightdeckTest as {
+    submitLogin(token?: string): Promise<void>;
+    lockDashboard(): void;
+    readCapabilityToken(): void;
+    authedHeaders(extra?: Record<string, string>): Record<string, string>;
+    eventsUrl(): string;
+    getToken(): string;
+    activeStreams(): number;
+  };
+  const harness: LoginHarness = {
+    overlay,
+    tokenInput,
+    errorEl,
+    fetchCalls,
+    storage,
+    getToken: () => api.getToken(),
+    api,
+  };
+  domContentLoaded?.();
+  return harness;
+}
+
 describe('Dashboard data integrity (E2E)', () => {
   it('serves a fixture project and renders exactly its real sessions', async () => {
     const fixture = makeRepo();
@@ -402,5 +563,182 @@ describe('Dashboard data integrity (E2E)', () => {
     client.container.innerHTML += `<div class="session-card" data-id="fabricated"></div>`;
     expect(client.countCards()).toBe(state.sessions.length + 1);
     expect(() => expect(client.countCards()).toBe(state.sessions.length)).toThrow();
+  });
+});
+
+describe('Dashboard login gate (E2E)', () => {
+  const STORAGE_KEY = 'flightdeck.capabilityToken';
+
+  it('boots unlocked when the capability token rides the URL fragment', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/#token=SECRET-TOKEN',
+    });
+
+    // The token moved from the fragment into sessionStorage and the fragment
+    // was stripped from the URL so it cannot linger in history or a bookmark.
+    expect(client.getToken()).toBe('SECRET-TOKEN');
+    expect(client.storage.get(STORAGE_KEY)).toBe('SECRET-TOKEN');
+    expect(client.api.eventsUrl()).toBe('/api/events?token=SECRET-TOKEN');
+
+    // Unlocked means the login overlay never appeared and the first /api
+    // request went out presenting the token in the header.
+    expect(client.overlay.classList.contains('hidden')).toBe(true);
+    expect(client.fetchCalls.length).toBeGreaterThan(0);
+    expect(client.fetchCalls[0].url).toBe('/api/state');
+    expect(client.fetchCalls[0].headers['X-Flightdeck-Token']).toBe('SECRET-TOKEN');
+  });
+
+  it('stays locked and makes no /api call when no token is present', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+    });
+
+    expect(client.getToken()).toBe('');
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+    expect(client.fetchCalls).toHaveLength(0);
+  });
+
+  it('logs in with the right token and stores it for the next refresh', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () => new Response('{}', { status: 200 }),
+    });
+    client.tokenInput.value = 'RIGHT-TOKEN';
+    await client.api.submitLogin();
+    await waitFor(() => client.fetchCalls.length >= 2);
+
+    expect(client.getToken()).toBe('RIGHT-TOKEN');
+    expect(client.storage.get(STORAGE_KEY)).toBe('RIGHT-TOKEN');
+    expect(client.overlay.classList.contains('hidden')).toBe(true);
+
+    // The validating call and the post-login state fetch both present it.
+    expect(client.fetchCalls[0].headers['X-Flightdeck-Token']).toBe('RIGHT-TOKEN');
+    expect(client.fetchCalls[1].headers['X-Flightdeck-Token']).toBe('RIGHT-TOKEN');
+  });
+
+  it('rejects a wrong token on the login screen and never unlocks', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () =>
+        new Response('{"error":"missing or invalid capability token"}', { status: 401 }),
+    });
+    client.tokenInput.value = 'WRONG-TOKEN';
+    await client.api.submitLogin();
+
+    expect(client.getToken()).toBe('');
+    expect(client.storage.has(STORAGE_KEY)).toBe(false);
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+    expect(client.errorEl.textContent).toContain('rejected');
+    expect(client.errorEl.classList.contains('hidden')).toBe(false);
+  });
+
+  it('requires the token to be non-empty', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () => new Response('{}', { status: 200 }),
+    });
+    client.tokenInput.value = '   ';
+    await client.api.submitLogin();
+
+    expect(client.fetchCalls).toHaveLength(0);
+    expect(client.errorEl.textContent).toContain('printed by deck ui');
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+  });
+
+  it('lock clears the token and returns to the login screen', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/#token=SECRET-TOKEN',
+      fetchImpl: async () => new Response('{}', { status: 200 }),
+    });
+    expect(client.getToken()).toBe('SECRET-TOKEN');
+
+    client.api.lockDashboard();
+
+    expect(client.getToken()).toBe('');
+    expect(client.storage.has(STORAGE_KEY)).toBe(false);
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+  });
+
+  it('authenticates against the real server with the token from the URL', async () => {
+    const fixture = makeRepo();
+    const server = createWebServer({ port: 0, projectRoot: fixture.root });
+    const appJs = readAppJs();
+
+    try {
+      const port = await server.start();
+
+      // The dashboard is handed the token exactly the way deck ui prints it.
+      const loggedIn = loadLoginClient(appJs, {
+        href: `http://127.0.0.1:${port}/#token=${server.capabilityToken}`,
+        fetchImpl: async (url, init) =>
+          fetch(`http://127.0.0.1:${port}${url}`, init),
+      });
+      expect(loggedIn.getToken()).toBe(server.capabilityToken);
+      await waitFor(() => loggedIn.fetchCalls.length >= 1);
+      expect(loggedIn.fetchCalls[0].status).toBe(200);
+
+      // The same server, reached without a token, refuses the state fetch, so
+      // the login gate is what the token actually gates.
+      const locked = loadLoginClient(appJs, {
+        href: `http://127.0.0.1:${port}/`,
+        fetchImpl: async (url, init) => fetch(`http://127.0.0.1:${port}${url}`, init),
+      });
+      await locked.api.submitLogin('nope');
+      expect(locked.fetchCalls[0].status).toBe(401);
+      expect(locked.overlay.classList.contains('hidden')).toBe(false);
+    } finally {
+      await server.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it('re-locks to the login screen when the stored token is rejected', async () => {
+    const appJs = readAppJs();
+    // A tab unlocked before the server restarted still holds the old capability
+    // token in sessionStorage; the restart minted a fresh one, so the stored
+    // token is stale. The client must return to the login screen, not sit
+    // behind a permanent error banner.
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      storage: { [STORAGE_KEY]: 'STALE-TOKEN' },
+      fetchImpl: async () =>
+        new Response('{"error":"missing or invalid capability token"}', { status: 401 }),
+    });
+    expect(client.getToken()).toBe('STALE-TOKEN');
+
+    // The first state fetch is rejected and the dashboard re-locks.
+    await waitFor(() => !client.overlay.classList.contains('hidden'));
+    expect(client.getToken()).toBe('');
+    expect(client.storage.has(STORAGE_KEY)).toBe(false);
+    expect(client.errorEl.textContent).toContain('no longer valid');
+  });
+
+  it('lock tears the dashboard down and a re-login restarts one stream pair', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () => new Response('{}', { status: 200 }),
+    });
+
+    await client.api.submitLogin('TOKEN');
+    await waitFor(() => client.fetchCalls.length >= 2);
+    // One unlocked dashboard runs exactly one poll loop and one SSE stream.
+    expect(client.api.activeStreams()).toBe(2);
+
+    // Locking stops the poll loop and closes the stream, not just the token.
+    client.api.lockDashboard();
+    expect(client.api.activeStreams()).toBe(0);
+
+    // A fresh login restarts exactly one pair; a second login never stacks a
+    // second interval or EventSource on top of a live one.
+    await client.api.submitLogin('TOKEN');
+    await waitFor(() => client.fetchCalls.length >= 4);
+    expect(client.api.activeStreams()).toBe(2);
   });
 });
