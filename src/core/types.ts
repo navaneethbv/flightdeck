@@ -8,7 +8,64 @@ export function isHarnessKind(value: string): value is HarnessKind {
 
 export type SessionStatus = 'running' | 'stopped' | 'failed';
 
-export type SessionPolicy = 'default' | 'child' | 'manager';
+export type SessionPolicy = 'default' | 'child' | 'manager' | 'brain';
+
+export type TaskStatus =
+  | 'pending'
+  | 'assigned'
+  | 'reported'
+  | 'gating'
+  | 'revising'
+  | 'in_review'
+  | 'done'
+  | 'blocked';
+
+/** What a worker reports through the `report_done` MCP tool. */
+export interface WorkerReport {
+  summary: string;
+  filesChanged: string[];
+  testsRun: string;
+  uncertainties: string;
+}
+
+/**
+ * Objective gate output. A null exit code means the gate was skipped because
+ * its command was configured empty.
+ */
+export interface GateResult {
+  testExitCode: number | null;
+  lintExitCode: number | null;
+  failureTail: string;
+}
+
+export interface Task {
+  id: string;
+  argusId: string;
+  title: string;
+  spec: string;
+  status: TaskStatus;
+  assigneeSession: string | null;
+  dependsOn: string[];
+  attempts: number;
+  workerReport: WorkerReport | null;
+  gateResult: GateResult | null;
+  diffstat: string | null;
+  verdict: string | null;
+  verdictReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Question {
+  id: number;
+  argusId: string;
+  sessionId: string;
+  question: string;
+  answer: string | null;
+  faqKey: string | null;
+  createdAt: number;
+  answeredAt: number | null;
+}
 
 export interface Session {
   id: string;

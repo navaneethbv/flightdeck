@@ -23,14 +23,14 @@ export interface HarnessAdapter {
   detect(): boolean;
   profileEnv(session: Session, extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   interactiveArgs(): string[];
-  headlessArgs(prompt: string, opts: { autonomy?: boolean }): string[];
+  headlessArgs(prompt: string, opts: { autonomy?: boolean; model?: string }): string[];
   /**
    * Args for headless session spawns, chosen so model and usage can be parsed
    * from the output stream. Differs from `headlessArgs` (used by playbook
    * `llm` steps, which keep plain text) only where the harness needs a
    * structured output format to report usage.
    */
-  sessionArgs(prompt: string, opts: { autonomy?: boolean }): string[];
+  sessionArgs(prompt: string, opts: { autonomy?: boolean; model?: string }): string[];
   writeMcpConfig(session: Session, worktreeDir: string, extraEnv?: Record<string, string>): void;
   /** Extract telemetry fields from one line of harness output. */
   telemetry(line: string): TelemetryExtraction | null;
@@ -107,6 +107,7 @@ const claude: HarnessAdapter = {
   sessionArgs: (prompt, opts) => {
     const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
     if (opts.autonomy) args.push('--permission-mode', 'acceptEdits');
+    if (opts.model) args.push('--model', opts.model);
     return args;
   },
   telemetry: parseClaudeLine,
@@ -132,8 +133,9 @@ const codex: HarnessAdapter = {
     const args = ['exec', '--json', prompt];
     return args;
   },
-  sessionArgs: (prompt, _opts) => {
+  sessionArgs: (prompt, opts) => {
     const args = ['exec', '--json', prompt];
+    if (opts.model) args.push('--model', opts.model);
     return args;
   },
   telemetry: parseCodexLine,
@@ -163,6 +165,7 @@ const opencode: HarnessAdapter = {
   sessionArgs: (prompt, opts) => {
     const args = ['run', '--format', 'json', '--print-logs', prompt];
     if (opts.autonomy) args.push('--permission', 'allow');
+    if (opts.model) args.push('--model', opts.model);
     return args;
   },
   telemetry: parseOpencodeLine,
@@ -206,6 +209,7 @@ const gemini: HarnessAdapter = {
   sessionArgs: (prompt, opts) => {
     const args = ['run', prompt];
     if (opts.autonomy) args.push('--auto-approve');
+    // gemini exposes no verified model flag, so opts.model is ignored here.
     return args;
   },
   telemetry: parseGeminiLine,

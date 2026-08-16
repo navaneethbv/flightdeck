@@ -20,6 +20,9 @@ import { resolveSecret } from '../secrets/keychain.js';
 import { exportSession } from '../sessions/export.js';
 import { renderMissionTemplate } from '../argus/templates.js';
 import { repairProject } from '../core/repair.js';
+import { TaskBoard } from '../argus/board.js';
+import { QuestionQueue } from '../argus/questions.js';
+import { getDb } from '../core/state.js';
 
 function asStr(val: unknown, fallback = ''): string {
   if (typeof val === 'string') return val;
@@ -59,6 +62,8 @@ export class ToolRegistry {
   private readonly messaging: MessagingStore;
   private readonly ssh: SshStore;
   private readonly integrations: Integrations;
+  private readonly board: TaskBoard;
+  private readonly questions: QuestionQueue;
   readonly tools: Map<string, ToolDef> = new Map();
 
   constructor(private readonly ctx: McpContext) {
@@ -68,6 +73,8 @@ export class ToolRegistry {
     this.messaging = new MessagingStore(ctx.projectRoot);
     this.ssh = new SshStore(ctx.projectRoot);
     this.integrations = new Integrations(ctx.projectRoot);
+    this.board = new TaskBoard(ctx.projectRoot);
+    this.questions = new QuestionQueue(ctx.projectRoot);
     this.registerAll();
   }
 
@@ -524,6 +531,103 @@ export class ToolRegistry {
       risk: 'additive',
       handler: async (args) =>
         messaging.send(s.sessionId ?? 'agent', asOptStr(args.to) ?? null, asStr(args.body)),
+    });
+
+    const board = this.board;
+    const questions = this.questions;
+
+    // Worker-facing. All three are read or additive so a `policy: 'child'`
+    // session can call them without a risky-tools grant.
+    this.register({
+      name: 'task_get',
+      description: 'Get the task currently assigned to this session, with its full spec.',
+      inputSchema: { type: 'object', properties: {} },
+      risk: 'read',
+      handler: async () => {
+        if (!s.sessionId) throw new Error('task_get requires a session');
+        const mine = board
+          .listByAssignee(s.sessionId)
+          .find((t) => t.status === 'assigned' || t.status === 'revising');
+        if (!mine) throw new Error('no task is currently assigned to this session');
+        return {
+          id: mine.id,
+          title: mine.title,
+          spec: mine.spec,
+          status: mine.status,
+          attempts: mine.attempts,
+          previousFeedback: mine.verdictReason,
+        };
+      },
+    });
+
+    this.register({
+      name: 'report_done',
+      description:
+        'Report the assigned task complete. Provide an honest summary; automated test and lint gates run immediately afterwards and will return the task to you if they fail.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          files_changed: { type: 'array', items: { type: 'string' } },
+          tests_run: { type: 'string' },
+          uncertainties: { type: 'string' },
+        },
+        required: ['summary'],
+      },
+      risk: 'additive',
+      handler: async (args) => {
+        if (!s.sessionId) throw new Error('report_done requires a session');
+        const mine = board
+          .listByAssignee(s.sessionId)
+          .find((t) => t.status === 'assigned' || t.status === 'revising');
+        if (!mine) throw new Error('no task is currently assigned to this session');
+        const files = Array.isArray(args.files_changed)
+          ? (args.files_changed as unknown[]).map((f) => asStr(f))
+          : [];
+        board.report(mine.id, {
+          summary: asStr(args.summary),
+          filesChanged: files,
+          testsRun: asStr(args.tests_run),
+          uncertainties: asStr(args.uncertainties),
+        });
+        return { ok: true, taskId: mine.id, next: 'gates' };
+      },
+    });
+
+    this.register({
+      name: 'ask_manager',
+      description:
+        'Ask the orchestrator a question. Answers are cached, so repeated questions are free. If no answer arrives in time, proceed on your best judgment and record the assumption in your report.',
+      inputSchema: {
+        type: 'object',
+        properties: { question: { type: 'string' } },
+        required: ['question'],
+      },
+      risk: 'additive',
+      handler: async (args) => {
+        if (!s.sessionId) throw new Error('ask_manager requires a session');
+        const session = sessions.get(s.sessionId);
+        const argusId = session?.argusParent;
+        if (!argusId) throw new Error('ask_manager is only available to fleet workers');
+
+        const question = asStr(args.question);
+        const asked = questions.ask(argusId, s.sessionId, question);
+        if (asked.hit) return { answer: asked.answer, cached: true };
+
+        const row = getDb(s.projectRoot)
+          .prepare('SELECT question_timeout_sec FROM argus WHERE id = ?')
+          .get(argusId) as { question_timeout_sec?: number } | undefined;
+        const timeoutMs = Number(row?.question_timeout_sec ?? 120) * 1000;
+
+        const answer = await questions.waitForAnswer(asked.id, timeoutMs);
+        if (answer !== null) return { answer, cached: false };
+        return {
+          answer: null,
+          cached: false,
+          directive:
+            'No answer available in time. Proceed on your best judgment and record the assumption in the uncertainties field of your report.',
+        };
+      },
     });
 
     this.register({
