@@ -208,8 +208,12 @@ export class SessionManager {
       running.delete(id);
       try {
         const dbNow = getDb(this.projectRoot);
+        // A claimed session is owned by a human in a fleet pane. Its headless
+        // child has already been stopped on purpose, so this close event must
+        // not overwrite the running/claimed state the claim just recorded.
+        // The claimed_at guard makes the update a no-op for either event order.
         dbNow.prepare(
-          'UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, last_activity_at = ? WHERE id = ?'
+          'UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, last_activity_at = ? WHERE id = ? AND claimed_at IS NULL'
         ).run(code === 0 ? 'stopped' : 'failed', now(), code, now(), id);
       } catch {
         // db might be cleaned up in tests

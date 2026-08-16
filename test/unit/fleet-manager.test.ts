@@ -117,4 +117,27 @@ describe('FleetManager', () => {
       fixture.cleanup();
     }
   });
+
+  it('stopWorker stops the process but refuses brain and manager sessions', async () => {
+    const fixture = makeRepo();
+    try {
+      const sm = new SessionManager(fixture.root);
+      const worker = sm.createSession({
+        name: 'w1', harness: 'opencode', cwd: fixture.root, policy: 'child',
+      });
+      getDb(fixture.root)
+        .prepare("UPDATE sessions SET status = 'running' WHERE id = ?")
+        .run(worker.id);
+      const brain = sm.createSession({
+        name: 'b1', harness: 'claude', cwd: fixture.root, policy: 'brain',
+      });
+      const manager = new FleetManager(fixture.root, new Tmux(fakeRunner().run));
+
+      await manager.stopWorker(worker.id);
+      expect(sm.get(worker.id)?.status).toBe('stopped');
+      await expect(manager.stopWorker(brain.id)).rejects.toThrow(/not a worker/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });

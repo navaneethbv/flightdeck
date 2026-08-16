@@ -337,20 +337,27 @@ function renderFleet() {
 
     const status = hung.has(s.id) ? 'Hung' : s.status;
     const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
+    const claimed = s.claimedAt !== null && s.claimedAt !== undefined;
     const telemetry = s.telemetry ?? {};
     const model = text(telemetry.model);
-    const spend = formatSpend(telemetry.costUsd);
+    // A claimed session reports no usage from its headless run, so its spend
+    // renders as the inert dash rather than a stale or fabricated number.
+    const spend = claimed ? NO_VALUE : formatSpend(telemetry.costUsd);
     const progress = formatProgress(telemetry.progress);
     const telemetryNote =
       model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
         ? 'Model, spend, and progress were not reported.'
         : 'Model, spend, and progress as reported by the harness.';
+    const claimBadge = claimed
+      ? '<span class="session-claim-badge" title="A human has taken over this worker">CLAIMED</span>'
+      : '';
 
     card.innerHTML = `
       <div class="session-card-header">
         <div class="session-card-name-row">
           <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
           <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+          ${claimBadge}
         </div>
         <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
       </div>

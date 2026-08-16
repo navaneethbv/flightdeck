@@ -890,6 +890,19 @@ body {
   white-space: nowrap;
 }
 
+/* A human-owned worker is visibly claimed and reports no live spend. */
+.session-claim-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
 /* Unmeasured values render inert rather than plausible. */
 .session-percent {
   font-size: 11px;

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
-import type { Argus, BrainHarness, HarnessKind, Task, WorkerHarness } from '../core/types.js';
+import type { Argus, BrainHarness, HarnessKind, Session, Task, WorkerHarness } from '../core/types.js';
 import { SessionManager } from '../sessions/manager.js';
 import { NotesStore } from '../notes/store.js';
 import { TablesStore } from '../tables/store.js';
@@ -788,27 +788,47 @@ export class ArgusManager {
     return { mission, conventions };
   }
 
+  /**
+   * Spawns exactly one worker for the highest-priority dispatchable task,
+   * through the same rules as the automatic dispatcher. This is the shared
+   * operation behind both the fleet pulse and the manual "new worker" action,
+   * so a manual spawn can never create an untracked agent with no task.
+   */
+  async spawnNextWorker(id: string): Promise<{ task: Task; session: Session }> {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    const active = this.children(argus).filter((child) => child.session?.status === 'running');
+    if (active.length >= argus.childLimit) throw new Error('fleet is already at its child limit');
+    const task = this.board.dispatchable(id)[0];
+    if (!task) throw new Error('no dispatchable task is available');
+    const harnesses = this.workerHarnessesFor(id);
+    const sequence = this.children(argus).length + 1;
+    const session = await this.spawnWorker(argus, task, harnesses[(sequence - 1) % harnesses.length], sequence);
+    return { task, session };
+  }
+
+  private workerHarnessesFor(id: string): WorkerHarness[] {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    return argus.workerHarnesses;
+  }
+
   /** Assigns dispatchable tasks to fresh worker sessions, up to the child limit. */
   private async dispatch(id: string): Promise<void> {
     const argus = this.get(id);
     if (!argus) return;
-    const row = this.db
-      .prepare('SELECT worker_harnesses FROM argus WHERE id = ?')
-      .get(id) as { worker_harnesses?: string };
-    const harnesses = JSON.parse(row.worker_harnesses ?? '["opencode"]') as HarnessKind[];
-
     const active = this.children(argus).filter((c) => c.session?.status === 'running');
     let slots = argus.childLimit - active.length;
-    let n = this.children(argus).length;
-
-    for (const task of this.board.dispatchable(id)) {
-      if (slots <= 0) break;
+    const tasks = this.board.dispatchable(id);
+    let i = 0;
+    while (slots > 0 && i < tasks.length) {
       try {
-        n += 1;
-        await this.spawnWorker(argus, task, harnesses[n % harnesses.length], n);
+        await this.spawnNextWorker(id);
         slots -= 1;
+        i += 1;
       } catch (err) {
         this.writeProgress(id, null, 'child_failed', (err as Error).message);
+        i += 1;
       }
     }
   }
@@ -818,7 +838,7 @@ export class ArgusManager {
     task: Task,
     harness: HarnessKind,
     n: number
-  ): Promise<void> {
+  ): Promise<Session> {
     const worktreeName = `${slugify(argus.name)}-${n}-${slugify(task.title, 24)}`;
     const info = createWorktree(this.projectRoot, worktreeName, argus.managerSessionId ?? undefined);
     const session = this.sessions.createSession({
@@ -853,6 +873,7 @@ export class ArgusManager {
       env: { FLIGHTDECK_ARGUS_ID: argus.id },
     });
     this.writeProgress(argus.id, session.id, 'worker_spawned', task.title);
+    return session;
   }
 
   private children(argus: Argus): ArgusChild[] {
