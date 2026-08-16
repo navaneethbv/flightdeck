@@ -59,6 +59,7 @@ export interface Task {
   updatedAt: number;
   /** Higher dispatches first. Set by the human override surface. */
   priority: number;
+  reviewQueuedAt: number | null;
 }
 
 export interface Question {

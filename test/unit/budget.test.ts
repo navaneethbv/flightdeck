@@ -117,6 +117,27 @@ describe('budgetState', () => {
       fixture.cleanup();
     }
   });
+
+  it('ages the review queue from review_queued_at rather than created_at', () => {
+    const fixture = makeRepo();
+    try {
+      const db = getDb(fixture.root);
+      db.prepare(
+        "INSERT INTO argus (id, name, project_root, cap, child_limit, pulse_sec, status, created_at, budget_window_sec, budget_max_tokens) VALUES ('a1', 'a', ?, 'cap', 4, 60, 'running', ?, 3600, 1000)"
+      ).run(fixture.root, now());
+      // Seed an in_review task created 2 hours ago but queued 1 minute ago
+      db.prepare(
+        "INSERT INTO tasks (id, argus_id, title, spec, status, created_at, updated_at, review_queued_at) VALUES ('t1', 'a1', 'task 1', 'spec', 'in_review', ?, ?, ?)"
+      ).run(now() - 7200 * 1000, now(), now() - 60 * 1000);
+
+      const state = budgetState(fixture.root, 'a1');
+      expect(state.oldestReviewAgeSec).toBeLessThan(120);
+      const batchTierState = fixtureBudget('batch', 850, 1000);
+      expect(reviewBatchSize(batchTierState, 1, (state.oldestReviewAgeSec ?? 0) * 1000, false)).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });
 
 describe('reviewBatchSize', () => {

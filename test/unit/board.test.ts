@@ -186,4 +186,29 @@ describe('TaskBoard', () => {
       fixture.cleanup();
     }
   });
+
+  it('stamps the review queue entry time and clears it on revision', () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create('argus-1', [{ title: 'a', spec: 'a', dependsOn: [] }]);
+      board.assign(task.id, 'w1');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+
+      const queued = board.recordGates(
+        task.id,
+        { testExitCode: 0, lintExitCode: 0, failureTail: '' },
+        ' src/a.ts | 2 +-'
+      );
+      expect(queued.status).toBe('in_review');
+      expect(queued.reviewQueuedAt).not.toBeNull();
+      expect(queued.reviewQueuedAt!).toBeGreaterThanOrEqual(queued.createdAt);
+
+      const revising = board.toRevising(task.id, 'needs work');
+      expect(revising.reviewQueuedAt).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });

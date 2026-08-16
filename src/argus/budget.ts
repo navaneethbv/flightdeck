@@ -112,7 +112,9 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
     .get(...(['brain', argusId, windowStart] as SQLInputValue[])) as { started: number | null };
 
   const queued = db
-    .prepare('SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM tasks WHERE argus_id = ? AND status = ?')
+    .prepare(
+      'SELECT COUNT(*) AS n, MIN(COALESCE(review_queued_at, created_at)) AS oldest FROM tasks WHERE argus_id = ? AND status = ?'
+    )
     .get(...([argusId, 'in_review'] as SQLInputValue[])) as { n: number; oldest: number | null };
 
   const spent = Number(row.spent);

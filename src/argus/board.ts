@@ -38,6 +38,10 @@ function rowToTask(row: Record<string, unknown>): Task {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     priority: Number(row.priority ?? 0),
+    reviewQueuedAt:
+      row.review_queued_at === null || row.review_queued_at === undefined
+        ? null
+        : Number(row.review_queued_at),
   };
 }
 
@@ -163,7 +167,7 @@ export class TaskBoard {
       (result.lintExitCode !== null && result.lintExitCode !== 0);
     this.update(taskId, { gate_result: JSON.stringify(result), diffstat });
     if (failed) return this.toRevising(taskId, result.failureTail);
-    return this.update(taskId, { status: 'in_review' });
+    return this.update(taskId, { status: 'in_review', review_queued_at: now() });
   }
 
   /** Moves a reported task into the explicit gating state before gates run. */
@@ -207,6 +211,7 @@ export class TaskBoard {
       status: 'revising',
       attempts: current.attempts + 1,
       verdict_reason: reason,
+      review_queued_at: null,
     });
   }
 

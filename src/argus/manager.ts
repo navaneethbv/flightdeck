@@ -570,7 +570,7 @@ export class ArgusManager {
       return;
     }
 
-    const oldest = Math.min(...queued.map((t) => t.createdAt));
+    const oldest = Math.min(...queued.map((t) => t.reviewQueuedAt ?? t.createdAt));
     const batchSize = reviewBatchSize(budget, queued.length, now() - oldest, force);
     if (batchSize === 0) {
       this.writeProgress(id, null, 'review_batched', `queued=${queued.length} oldest=${Math.round((now() - oldest) / 1000)}s`);

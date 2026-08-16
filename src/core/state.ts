@@ -152,7 +152,8 @@ function migrate(db: DatabaseSync): void {
       verdict_reason TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 0
+      priority INTEGER NOT NULL DEFAULT 0,
+      review_queued_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS questions (
@@ -204,6 +205,14 @@ function migrate(db: DatabaseSync): void {
   for (const col of questionColumns) {
     try {
       db.exec(`ALTER TABLE questions ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
+  const taskColumns = ['review_queued_at INTEGER'];
+  for (const col of taskColumns) {
+    try {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${col}`);
     } catch {
       // column already exists
     }
