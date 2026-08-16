@@ -6,6 +6,7 @@ import { ArgusManager } from '../../src/argus/manager.js';
 import { Override } from '../../src/argus/override.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { QuestionQueue } from '../../src/argus/questions.js';
+import { budgetState } from '../../src/argus/budget.js';
 import { NotesStore } from '../../src/notes/store.js';
 import { TablesStore } from '../../src/tables/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
@@ -735,11 +736,9 @@ describe('orchestration', () => {
   it('does not re-review a need_files task forever', async () => {
     const fixture = makeRepo();
     try {
-      let reviewCalls = 0;
       const board = new TaskBoard(fixture.root);
       let argusId = '';
-      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
-        if (opts.label === 'review') reviewCalls += 1;
+      const manager = new ArgusManager(fixture.root, async (_r, _a, _opts) => {
         const queued = board.list(argusId, 'in_review');
         return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
       });
@@ -766,11 +765,167 @@ describe('orchestration', () => {
       expect(board.get(task.id)?.attempts).toBe(1);
       expect(board.list(argusId, 'in_review')).toHaveLength(0);
       expect(String(board.get(task.id)?.verdictReason)).toContain('files');
+    } finally {
+      fixture.cleanup();
+    }
+  });
 
-      // A second drain has nothing queued, so the brain is not called again.
+  it('runs the complete lifecycle: plan, gate retry, tier 1, and tier 2 accept', async () => {
+    const fixture = makeRepo();
+    const promptLog = path.join(fixture.root, 'worker-prompts.txt');
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+    const opencode = `#!/bin/bash\nprintf '%s\\n' "$*" >> "${promptLog}"\nexit 0\n`;
+    fs.writeFileSync(path.join(binDir, 'opencode'), opencode, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${oldPath ?? ''}`;
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const calls: string[] = [];
+      const worker = new SessionManager(fixture.root);
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        calls.push(opts.label);
+        if (opts.label === 'plan') {
+          return '{"tasks":[{"title":"write proof","spec":"append the word proof to proof.txt and verify it","depends_on":[]}]}';
+        }
+        const queued = board.list(argusId, 'in_review');
+        const id = queued[0]?.id ?? '';
+        if (opts.label === 'review') {
+          return `{"verdicts":[{"task_id":"${id}","verdict":"need_files","paths":["proof.txt"]}]}`;
+        }
+        if (opts.label === 'review-files') {
+          return `{"verdicts":[{"task_id":"${id}","verdict":"accept","reason":"proof verified"}]}`;
+        }
+        return '{}';
+      });
+      const notes = new NotesStore(fixture.root);
+      const mission = notes.createNote('mission', '- write proof');
+      const conventions = notes.createNote('conventions', 'Use strict ESM and run npm test.');
+      const argus = manager.start({
+        name: 'lifecycle', missionNoteId: mission.id, conventionsNoteId: conventions.id,
+        childLimit: 2, pulseSec: 1, workerHarnesses: ['opencode'],
+      });
+      argusId = argus.id;
+      getDb(fixture.root)
+        .prepare("UPDATE argus SET brain_review_model = 'review-model', brain_plan_model = 'plan-model', budget_max_tokens = 1000000 WHERE id = ?")
+        .run(argusId);
+
+      // Pulse 1: plan and dispatch one worker.
+      await manager.pulse(argusId);
+      const task = board.list(argusId)[0];
+      expect(task.status).toBe('assigned');
+      await waitFor(() => (fs.existsSync(promptLog) ? promptLog : null), 5000);
+      const firstPrompt = fs.readFileSync(promptLog, 'utf8');
+      expect(firstPrompt).toContain('proof.txt');
+
+      // The worker (simulated here) reads its task, sees conventions, and reports.
+      const workerId = task.assigneeSession!;
+      const registry = new ToolRegistry({
+        projectRoot: fixture.root,
+        sessionId: workerId,
+        policy: 'child',
+        isManager: false,
+        riskyTools: false,
+        confirm: async () => false,
+      });
+      const got = (await registry.call('task_get', {})) as Record<string, unknown>;
+      expect(got.projectConventions).toBe('Use strict ESM and run npm test.');
+
+      // First report: the gate fails once.
+      fs.writeFileSync(path.join(worker.get(workerId)!.cwd, 'proof.txt'), 'wrong content');
+      await registry.call('report_done', {
+        summary: 'first attempt', files_changed: ['proof.txt'], tests_run: '', uncertainties: '',
+      });
+      await manager.runGatesForReported(argusId, { test: 'grep proof proof.txt || { echo "proof missing"; exit 1; }', lint: '' });
+      expect(board.get(task.id)?.status).toBe('revising');
+      expect(board.get(task.id)?.attempts).toBe(1);
+
+      // The same session receives a revision prompt in the same worktree.
+      await manager.resumeRevisions(argusId);
+      expect(board.get(task.id)?.status).toBe('assigned');
+      expect(board.get(task.id)?.assigneeSession).toBe(workerId);
+      await waitFor(() => {
+        const prompts = fs.readFileSync(promptLog, 'utf8');
+        return prompts.includes('requires revision') ? prompts : null;
+      }, 5000);
+      const secondPrompt = fs.readFileSync(promptLog, 'utf8');
+      expect(secondPrompt).toContain('requires revision');
+      expect(secondPrompt).toContain('proof missing');
+
+      // The worker fixes the gate and reports again.
+      fs.writeFileSync(path.join(worker.get(workerId)!.cwd, 'proof.txt'), 'proof confirmed');
+      await registry.call('report_done', {
+        summary: 'second attempt', files_changed: ['proof.txt'], tests_run: '', uncertainties: '',
+      });
+      await manager.runGatesForReported(argusId, { test: 'grep proof proof.txt || { echo "proof missing"; exit 1; }', lint: '' });
+      expect(board.get(task.id)?.status).toBe('in_review');
+
+      // Tier 1 asks for the file; tier 2 accepts it.
       await manager.drainReviews(argusId);
+      expect(board.get(task.id)?.status).toBe('done');
+      expect(board.get(task.id)?.attempts).toBe(1);
+      expect(calls).toEqual(['plan', 'review', 'review-files']);
+    } finally {
+      process.env.PATH = oldPath ?? '';
+      fs.rmSync(binDir, { recursive: true, force: true });
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses review above 95 percent while workers and gates continue, and drains on force-review', async () => {
+    const fixture = makeRepo();
+    const promptLog = path.join(fixture.root, 'worker-prompts.txt');
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+    const opencode = `#!/bin/bash\nprintf '%s\\n' "$*" >> "${promptLog}"\nexit 0\n`;
+    fs.writeFileSync(path.join(binDir, 'opencode'), opencode, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${oldPath ?? ''}`;
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      let reviewCalls = 0;
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        if (opts.label !== 'review') return '{}';
+        reviewCalls += 1;
+        const queued = board.list(argusId, 'in_review');
+        return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"accept"}]}`;
+      });
+      const argus = manager.start({ name: 'paused', childLimit: 2, pulseSec: 1, workerHarnesses: ['opencode'] });
+      argusId = argus.id;
+      // 96 percent of the ceiling: reviews paused, gates and workers continue.
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET budget_max_tokens = 1000 WHERE id = ?')
+        .run(argusId);
+      getDb(fixture.root)
+        .prepare(
+          "INSERT INTO sessions (id, name, harness, project_root, cwd, status, token, policy, argus_parent, started_at, last_activity_at) VALUES ('bp1', 'bp1', 'claude', ?, ?, 'stopped', 'tok', 'brain', ?, ?, ?)"
+        )
+        .run(fixture.root, fixture.root, argusId, now(), now());
+      getDb(fixture.root)
+        .prepare('INSERT INTO session_telemetry (session_id, input_tokens, output_tokens, updated_at) VALUES (?, ?, ?, ?)')
+        .run('bp1', 600, 360, now());
+
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'a', dependsOn: [] }]);
+      board.assign(task.id, 'w0');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      const budget = budgetState(fixture.root, argusId);
+      expect(budget.fraction).toBeGreaterThan(0.95);
+      expect(budget.fraction).toBeLessThan(1);
+
+      await manager.drainReviews(argusId);
+      expect(reviewCalls).toBe(0);
+      expect(board.get(task.id)?.status).toBe('in_review');
+
+      const override = new Override(fixture.root);
+      await override.forceReview(argusId, manager);
+      expect(board.get(task.id)?.status).toBe('done');
       expect(reviewCalls).toBe(1);
     } finally {
+      process.env.PATH = oldPath ?? '';
+      fs.rmSync(binDir, { recursive: true, force: true });
       fixture.cleanup();
     }
   });

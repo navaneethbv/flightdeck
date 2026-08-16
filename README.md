@@ -147,9 +147,18 @@ deck argus start \
 | Command | Description |
 | :--- | :--- |
 | `deck argus init <name> [options]` | Scaffold a Mission note (`--template <feature\|refactor\|audit\|bugfix>`, `--title <title>`) |
-| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`) |
+| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`, `--conventions <note-id>`) |
 | `deck argus status [id] [--json]` | View fleet hierarchy, active children, and pulse progress |
 | `deck argus stop <id>` | Stop an Argus fleet and terminate all child subagents |
+| `deck argus budget <id> [--json]` | Show brain token spend, review queue depth, and the next rolling reset |
+
+### Argus behavior notes
+
+- `--conventions <note-id>` binds a project conventions note into every plan, answer, and `task_get` call.
+- Reported work runs objective gates first (tier 0); a failure returns the task to the same worker session in the same worktree for a revision, up to `--max-attempts`.
+- Review is two-tier: tier 1 (tier `brain-review-model`) sees only summaries and diffstat, and tier 2 (tier `brain-plan-model`) may read bounded, non-secret files from the worker worktree only when `need_files` is returned.
+- The token budget degrades by spend: below 60% reviews one task at a time, 60-80% batches four, 80-95% batches everything once four tasks queue or a task ages 30 minutes, and at or above 95% reviews pause. `force-review` may ignore the pause and batching below 100% but never the ceiling.
+- Worker questions are answered independently of the mission pulse, so `ask_manager` is not delayed by a long `--pulse`.
 
 ### Watchdog Supervisor
 | Command | Description |
