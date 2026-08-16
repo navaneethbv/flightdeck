@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { Command } from 'commander';
-import { useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { render, Box, Text, useInput } from 'ink';
 import { FleetManager } from '../../fleet/manager.js';
 import { FleetActions, type FleetActionResult } from '../../fleet/actions.js';
@@ -9,69 +9,102 @@ import { ArgusManager } from '../../argus/manager.js';
 import { TaskBoard } from '../../argus/board.js';
 import { budgetState } from '../../argus/budget.js';
 import { TablesStore } from '../../tables/store.js';
+import { reduceConsoleState, type ConsoleBounds, type ConsoleEffect, type FleetConsoleState } from '../../fleet/console-state.js';
 import { projectRootOf, handleError, printJson } from '../util.js';
+import type { Task } from '../../core/types.js';
 
-interface ConsoleSnapshot {
+export interface ConsoleSnapshot {
   sessions: ReturnType<FleetManager['fleetSessions']>;
   argusId: string | null;
-  counts: Record<string, number>;
+  tasks: Task[];
+  blockedTasks: Task[];
+  reviewQueueDepth: number;
+  nextBudgetResetAt: number | null;
   spent: number;
   ceiling: number;
   tier: string;
-  reviewQueueDepth: number;
-  nextBudgetResetAt: number | null;
   progress: string[];
   tick: number;
 }
 
+const TASK_ORDER: Record<string, number> = {
+  assigned: 0,
+  reported: 1,
+  gating: 2,
+  revising: 3,
+  in_review: 4,
+  pending: 5,
+  done: 6,
+  blocked: 7,
+};
+
+function sortTasks(tasks: Task[]): Task[] {
+  return [...tasks].sort(
+    (a, b) =>
+      (TASK_ORDER[a.status] ?? 99) - (TASK_ORDER[b.status] ?? 99) ||
+      (b.priority - a.priority) ||
+      (a.createdAt - b.createdAt)
+  );
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
+  const fleet = new FleetManager(projectRoot);
+  fleet.reconcile();
+  const argus = new ArgusManager(projectRoot).list()[0] ?? null;
+  const empty = {
+    sessions: fleet.fleetSessions(),
+    argusId: null,
+    tasks: [] as Task[],
+    blockedTasks: [] as Task[],
+    reviewQueueDepth: 0,
+    nextBudgetResetAt: null,
+    spent: 0,
+    ceiling: 0,
+    tier: 'normal',
+    progress: [] as string[],
+  };
+  if (!argus) return empty;
+  const all = new TaskBoard(projectRoot).list(argus.id);
+  const budget = budgetState(projectRoot, argus.id);
+  const progress = new TablesStore(projectRoot)
+    .query('argus_progress', { where: { argus_id: argus.id }, limit: 8 })
+    .map((r) => {
+      const event = typeof r.event === 'string' ? r.event : '';
+      const detail = typeof r.detail === 'string' ? r.detail : '';
+      return `${event} ${detail}`;
+    });
+  return {
+    sessions: fleet.fleetSessions(),
+    argusId: argus.id,
+    tasks: sortTasks(all),
+    blockedTasks: sortTasks(all.filter((t) => t.status === 'blocked')),
+    reviewQueueDepth: budget.reviewQueueDepth,
+    nextBudgetResetAt: budget.nextResetAt,
+    spent: budget.spent,
+    ceiling: budget.ceiling,
+    tier: budget.tier,
+    progress,
+  };
+}
+
 function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
   const [snap, setSnap] = useState<ConsoleSnapshot>({
-    sessions: [], argusId: null, counts: {}, spent: 0, ceiling: 0, tier: 'normal',
-    reviewQueueDepth: 0, nextBudgetResetAt: null, progress: [], tick: 0,
+    ...loadSnapshot(projectRoot),
+    tick: 0,
   });
 
   useEffect(() => {
     const load = (): void => {
       try {
-        const fleet = new FleetManager(projectRoot);
-        fleet.reconcile();
-        const argus = new ArgusManager(projectRoot).list()[0] ?? null;
-        const counts: Record<string, number> = {};
-        let spent = 0;
-        let ceiling = 0;
-        let tier = 'normal';
-        let reviewQueueDepth = 0;
-        let nextBudgetResetAt: number | null = null;
-        let progress: string[] = [];
-        if (argus) {
-          for (const task of new TaskBoard(projectRoot).list(argus.id)) {
-            counts[task.status] = (counts[task.status] ?? 0) + 1;
-          }
-          const budget = budgetState(projectRoot, argus.id);
-          spent = budget.spent;
-          ceiling = budget.ceiling;
-          tier = budget.tier;
-          reviewQueueDepth = budget.reviewQueueDepth;
-          nextBudgetResetAt = budget.nextResetAt;
-          progress = new TablesStore(projectRoot)
-            .query('argus_progress', { where: { argus_id: argus.id }, limit: 8 })
-            .map((r) => {
-              const event = typeof r.event === 'string' ? r.event : '';
-              const detail = typeof r.detail === 'string' ? r.detail : '';
-              return `${event} ${detail}`;
-            });
-        }
-        setSnap((prev) => ({
-          sessions: fleet.fleetSessions(),
-          argusId: argus?.id ?? null,
-          counts, spent, ceiling, tier, reviewQueueDepth, nextBudgetResetAt, progress,
-          tick: prev.tick + 1,
-        }));
+        setSnap((prev) => ({ ...loadSnapshot(projectRoot), tick: prev.tick + 1 }));
       } catch {
         // transient lock or missing tmux session; retry on the next tick
       }
     };
-    load();
     const timer = setInterval(load, 2000);
     return () => clearInterval(timer);
   }, [projectRoot]);
@@ -79,21 +112,51 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
   return snap;
 }
 
-function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
-  const snap = useConsoleSnapshot(projectRoot);
-  const [message, setMessage] = useState('');
+function initialState(): FleetConsoleState {
+  return { focus: 'workers', workerIndex: 0, taskIndex: 0, pendingAction: null, rejectReason: '' };
+}
 
-  useInput((input) => {
-    if (input === 'q') process.exit(0);
-    if (input === 'f' && snap.argusId) {
-      new FleetActions(projectRoot)
-        .forceReview(snap.argusId)
-        .then((r) => setMessage(r.message))
-        .catch((err: Error) => setMessage(err.message));
-    }
-  });
+function boundsOf(snap: ConsoleSnapshot): ConsoleBounds {
+  return {
+    argusId: snap.argusId,
+    workerIds: snap.sessions.map((s) => s.id),
+    taskIds: snap.tasks.map((t) => t.id),
+  };
+}
 
-  const countsLabel = Object.entries(snap.counts)
+/** Renders the pending confirmation or reject-reason prompt, or null. */
+function pendingPrompt(state: FleetConsoleState): string | null {
+  if (state.pendingAction?.kind === 'kill') {
+    return `Kill ${state.pendingAction.sessionId} and block its task?  [y] confirm  [n/Esc] cancel`;
+  }
+  if (state.pendingAction?.kind === 'reject') {
+    return `Reject ${state.pendingAction.taskId}: ${state.rejectReason}  [Enter] confirm  [Esc] cancel`;
+  }
+  return null;
+}
+
+/**
+ * The console as a pure view. All state and data arrive as props, so tests can
+ * render any snapshot without a tmux session or a live fleet. The parent wires
+ * the reducer and calls the returned effect through the shared FleetActions.
+ */
+export function FleetConsoleView({
+  snap,
+  state,
+  message,
+  onEffect: _onEffect,
+}: {
+  snap: ConsoleSnapshot;
+  state: FleetConsoleState;
+  message: string;
+  onEffect: (effect: ConsoleEffect) => void;
+}): ReactElement {
+  const countsLabel = Object.entries(
+    snap.tasks.reduce<Record<string, number>>((acc, t) => {
+      acc[t.status] = (acc[t.status] ?? 0) + 1;
+      return acc;
+    }, {})
+  )
     .map(([status, count]) => `${status}=${count}`)
     .join('  ');
 
@@ -107,14 +170,47 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
     <Box flexDirection="column" padding={1}>
       <Box marginBottom={1}>
         <Text bold color="cyan">{'flightdeck fleet  '}</Text>
-        <Text dimColor>{projectRoot}</Text>
+        <Text dimColor>{'select with Tab/arrows  '}</Text>
       </Box>
 
-      <Text bold underline>Board</Text>
-      <Box marginBottom={1}>
-        {countsLabel === ''
-          ? <Text dimColor>{'  (no tasks)'}</Text>
-          : <Text>{`  ${countsLabel}`}</Text>}
+      <Text bold underline>Workers</Text>
+      <Box flexDirection="column" marginBottom={1}>
+        {snap.sessions.length === 0 && <Text dimColor>{'  (none)'}</Text>}
+        {snap.sessions.map((s, i) => {
+          const marker = state.focus === 'workers' && i === state.workerIndex ? '>' : ' ';
+          const selected = state.focus === 'workers' && i === state.workerIndex;
+          return (
+            <Text key={s.id} color={selected ? 'white' : undefined}>
+              <Text color={selected ? 'cyan' : 'dim'}>{marker}</Text>
+              <Text color={s.status === 'running' ? 'green' : 'yellow'}>{` ${s.status.padEnd(8)}`}</Text>
+              <Text>{` ${s.name.padEnd(20)} ${s.harness.padEnd(9)}`}</Text>
+              {s.claimedAt !== null && <Text color="magenta">CLAIMED</Text>}
+            </Text>
+          );
+        })}
+      </Box>
+
+      <Text bold underline>Tasks</Text>
+      <Box flexDirection="column" marginBottom={1}>
+        {snap.tasks.length === 0 && <Text dimColor>{'  (none)'}</Text>}
+        {snap.tasks.map((t, i) => {
+          const marker = state.focus === 'tasks' && i === state.taskIndex ? '>' : ' ';
+          const selected = state.focus === 'tasks' && i === state.taskIndex;
+          const attempts = t.attempts > 0 ? ` a${t.attempts}` : '';
+          const priority = t.priority !== 0 ? ` p${t.priority}` : '';
+          return (
+            <Box key={t.id} flexDirection="column">
+              <Text color={selected ? 'white' : undefined}>
+                <Text color={selected ? 'cyan' : 'dim'}>{marker}</Text>
+                <Text color={t.status === 'blocked' ? 'red' : t.status === 'done' ? 'dim' : undefined}>{` ${t.status.padEnd(9)}`}</Text>
+                <Text>{` ${shortId(t.id)}  ${t.title}${attempts}${priority}`}</Text>
+              </Text>
+              {t.status === 'blocked' && t.verdictReason !== null && (
+                <Text color="red" dimColor>{`   ${t.verdictReason}`}</Text>
+              )}
+            </Box>
+          );
+        })}
       </Box>
 
       <Text bold underline>Brain budget</Text>
@@ -127,18 +223,6 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
         )}
       </Box>
 
-      <Text bold underline>Workers</Text>
-      <Box flexDirection="column" marginBottom={1}>
-        {snap.sessions.length === 0 && <Text dimColor>{'  (none)'}</Text>}
-        {snap.sessions.map((s) => (
-          <Text key={s.id}>
-            <Text color={s.status === 'running' ? 'green' : 'yellow'}>{`  ${s.status.padEnd(8)}`}</Text>
-            <Text>{`${s.name.padEnd(20)} ${s.harness.padEnd(9)}`}</Text>
-            {s.claimedAt !== null && <Text color="magenta">CLAIMED</Text>}
-          </Text>
-        ))}
-      </Box>
-
       <Text bold underline>Decisions</Text>
       <Box flexDirection="column" marginBottom={1}>
         {snap.progress.length === 0 && <Text dimColor>{'  (none)'}</Text>}
@@ -148,8 +232,110 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
       </Box>
 
       {message !== '' && <Text color="yellow">{message}</Text>}
-      <Text dimColor>{`refresh #${snap.tick}  [f] force review  [q] quit`}</Text>
+      {pendingPrompt(state) !== null && <Text color="yellow">{pendingPrompt(state)}</Text>}
+      {countsLabel !== '' && <Text dimColor>{countsLabel}</Text>}
+      <Text dimColor>{`refresh #${snap.tick}  [c]laim [r]elease [R]esume [k]ill [n]ew [a]ccept [x]reject [u]nblock [p]rioritize [f]orce [q]uit`}</Text>
     </Box>
+  );
+}
+
+function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
+  const snap = useConsoleSnapshot(projectRoot);
+  const [state, setState] = useState<FleetConsoleState>(initialState);
+  const [message, setMessage] = useState('');
+  const busyRef = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const snapRef = useRef(snap);
+  snapRef.current = snap;
+
+  const runEffect = useCallback((effect: ConsoleEffect) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const actions = new FleetActions(projectRoot);
+    let promise: Promise<FleetActionResult>;
+    switch (effect.kind) {
+      case 'claim':
+        promise = actions.claim(effect.sessionId);
+        break;
+      case 'release':
+        promise = actions.release(effect.sessionId, effect.resume);
+        break;
+      case 'kill':
+        promise = actions.kill(effect.sessionId);
+        break;
+      case 'spawn':
+        promise = actions.spawnNext(effect.argusId);
+        break;
+      case 'accept':
+        promise = Promise.resolve(actions.accept(effect.taskId, effect.argusId));
+        break;
+      case 'reject':
+        promise = Promise.resolve(actions.reject(effect.taskId, effect.reason, effect.argusId));
+        break;
+      case 'unblock':
+        promise = Promise.resolve(actions.unblock(effect.taskId, effect.argusId));
+        break;
+      case 'prioritize':
+        promise = Promise.resolve(actions.prioritize(effect.taskId, effect.argusId));
+        break;
+      case 'force-review':
+        promise = actions.forceReview(effect.argusId);
+        break;
+    }
+    promise
+      .then((r) => setMessage(r.message))
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => {
+        busyRef.current = false;
+      });
+  }, [projectRoot]);
+
+  useInput((input, key) => {
+    const current = stateRef.current;
+    const currentSnap = snapRef.current;
+    const pending = current.pendingAction;
+    let event: Parameters<typeof reduceConsoleState>[1] | null = null;
+
+    if (key.tab) event = { type: 'tab' };
+    else if (key.upArrow) event = { type: 'up' };
+    else if (key.downArrow) event = { type: 'down' };
+    else if (key.escape) event = { type: 'cancel' };
+    else if (key.return) event = { type: 'confirm' };
+    else if (key.backspace) event = { type: 'backspace' };
+    else if (input === 'c') event = { type: 'action', key: 'c' };
+    else if (input === 'r') event = { type: 'action', key: 'r' };
+    else if (input === 'R') event = { type: 'action', key: 'R' };
+    else if (input === 'k') event = { type: 'action', key: 'k' };
+    else if (input === 'y') event = { type: 'action', key: 'y' };
+    else if (input === 'n') event = { type: 'action', key: 'n' };
+    else if (input === 'a') event = { type: 'action', key: 'a' };
+    else if (input === 'x') event = { type: 'action', key: 'x' };
+    else if (input === 'u') event = { type: 'action', key: 'u' };
+    else if (input === 'p') event = { type: 'action', key: 'p' };
+    else if (input === 'f') event = { type: 'action', key: 'f' };
+    else if (input === 'q') {
+      // Quit only when no confirmation or text input is active.
+      if (!pending) process.exit(0);
+      else event = { type: 'cancel' };
+    } else if (pending?.kind === 'reject' && input.length > 0 && !key.ctrl) {
+      event = { type: 'text', value: input };
+    }
+
+    if (!event) return;
+    if (busyRef.current && event.type !== 'cancel') return;
+    const { state: next, effect } = reduceConsoleState(current, event, boundsOf(currentSnap));
+    setState(next);
+    if (effect) runEffect(effect);
+  });
+
+  return (
+    <FleetConsoleView
+      snap={snap}
+      state={state}
+      message={message}
+      onEffect={runEffect}
+    />
   );
 }
 
