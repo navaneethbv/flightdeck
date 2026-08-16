@@ -112,6 +112,13 @@ export class TaskBoard {
     return rows.map(rowToTask);
   }
 
+  listByAssignee(sessionId: string): Task[] {
+    const rows = this.db
+      .prepare('SELECT * FROM tasks WHERE assignee_session = ? ORDER BY created_at ASC')
+      .all(sessionId) as Record<string, unknown>[];
+    return rows.map(rowToTask);
+  }
+
   /** Pending tasks whose every dependency has reached `done`. */
   dispatchable(argusId: string): Task[] {
     const all = this.list(argusId);
