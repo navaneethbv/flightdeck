@@ -156,6 +156,76 @@ describe('orchestration', () => {
     }
   });
 
+  it('re-prompts the same worker session in the same worktree after a gate failure', async () => {
+    const fixture = makeRepo();
+    const promptLog = path.join(fixture.root, 'worker-prompts.txt');
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+    const opencode = `#!/bin/bash\nprintf '%s\\n' "$*" >> "${promptLog}"\nexit 0\n`;
+    fs.writeFileSync(path.join(binDir, 'opencode'), opencode, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${oldPath ?? ''}`;
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({ name: 'fleet' });
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(worktree, { recursive: true });
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1',
+        harness: 'opencode',
+        cwd: worktree,
+        policy: 'child',
+        argusParent: argus.id,
+      });
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create(argus.id, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+      board.report(task.id, {
+        summary: 'done', filesChanged: [], testsRun: '', uncertainties: '',
+      });
+
+      await manager.runGatesForReported(argus.id, { test: 'echo "tests failed" && exit 1', lint: '' });
+      await manager.resumeRevisions(argus.id);
+      await waitFor(() => (fs.existsSync(promptLog) ? promptLog : null), 5000);
+
+      const resumed = board.get(task.id);
+      expect(resumed?.status).toBe('assigned');
+      expect(resumed?.assigneeSession).toBe(worker.id);
+      expect(resumed?.verdictReason).toContain('tests failed');
+      expect(resumed?.attempts).toBe(1);
+      const prompt = fs.readFileSync(promptLog, 'utf8');
+      expect(prompt).toContain('do a');
+      expect(prompt).toContain('tests failed');
+      expect(prompt).toContain('report_done');
+    } finally {
+      process.env.PATH = oldPath ?? '';
+      fs.rmSync(binDir, { recursive: true, force: true });
+      fixture.cleanup();
+    }
+  });
+
+  it('blocks a revision at the configured attempt limit', async () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({ name: 'fleet' });
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET max_attempts_per_task = 2 WHERE id = ?')
+        .run(argus.id);
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create(argus.id, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, 'worker-1');
+      board.toRevising(task.id, 'first failure');
+      board.toRevising(task.id, 'second failure');
+
+      await manager.resumeRevisions(argus.id);
+
+      expect(board.get(task.id)?.status).toBe('blocked');
+      expect(String(board.get(task.id)?.verdictReason)).toContain('exhausted 2 attempts');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('blocks a task that exhausts its attempt budget', async () => {
     const fixture = makeRepo();
     try {
@@ -195,6 +265,9 @@ describe('orchestration', () => {
       const argus = manager.start({ name: 'fleet' });
       const argusId = argus.id;
       const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, 'w1');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
       board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
 
       await manager.drainReviews(argusId);
@@ -217,6 +290,9 @@ describe('orchestration', () => {
 
       const board = new TaskBoard(fixture.root);
       const [task] = board.create(argus.id, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, 'w1');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
       board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
 
       await manager.drainReviews(argus.id);
@@ -301,6 +377,9 @@ describe('orchestration', () => {
       argusId = argus.id;
 
       const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, 'w1');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
       board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
 
       await manager.drainReviews(argusId);
@@ -424,18 +503,18 @@ describe('orchestration', () => {
       await waitFor(() => (new TaskBoard(fixture.root).list(argusId).length > 0 ? argusId : null));
       const task = new TaskBoard(fixture.root).list(argusId)[0];
 
-      const worker = new SessionManager(fixture.root).createSession({
-        name: 'wake-worker',
-        harness: 'opencode',
-        cwd: fixture.root,
-        policy: 'child',
-        argusParent: argusId,
+      // The child dispatcher assigns the task to its own worker session, which
+      // the fake opencode binary exits. The test then reports through that same
+      // session, exactly as the real worker's report_done MCP call would.
+      await waitFor(() => {
+        const assigned = new TaskBoard(fixture.root).get(task.id);
+        return assigned?.status === 'assigned' && assigned.assigneeSession ? assigned.assigneeSession : null;
       });
+      const workerId = new TaskBoard(fixture.root).get(task.id)!.assigneeSession!;
       const board = new TaskBoard(fixture.root);
-      board.assign(task.id, worker.id);
       const registry = new ToolRegistry({
         projectRoot: fixture.root,
-        sessionId: worker.id,
+        sessionId: workerId,
         policy: 'child',
         isManager: false,
         riskyTools: false,

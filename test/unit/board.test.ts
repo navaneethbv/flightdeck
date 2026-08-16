@@ -100,6 +100,12 @@ describe('TaskBoard', () => {
         { title: 'a', spec: 'a', dependsOn: [] },
         { title: 'b', spec: 'b', dependsOn: [] },
       ]);
+      board.assign(pass.id, 'w1');
+      board.report(pass.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.assign(fail.id, 'w2');
+      board.report(fail.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(pass.id);
+      board.beginGating(fail.id);
 
       const passed = board.recordGates(
         pass.id,
@@ -115,6 +121,67 @@ describe('TaskBoard', () => {
       );
       expect(failed.status).toBe('revising');
       expect(failed.attempts).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('requires a reported task before gating and a gating task before recording gates', () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create('argus-1', [{ title: 'a', spec: 'a', dependsOn: [] }]);
+
+      expect(() => board.beginGating(task.id)).toThrow(/expected reported/);
+
+      board.assign(task.id, 'worker-1');
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      const gating = board.beginGating(task.id);
+      expect(gating.status).toBe('gating');
+
+      const reviewed = board.recordGates(
+        task.id,
+        { testExitCode: 0, lintExitCode: 0, failureTail: '' },
+        ''
+      );
+      expect(reviewed.status).toBe('in_review');
+      expect(() => board.recordGates(task.id, { testExitCode: 1, lintExitCode: 0, failureTail: 'x' }, '')).toThrow(
+        /expected gating/
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns a revision to assigned without clearing feedback or attempts', () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create('argus-1', [{ title: 'a', spec: 'a', dependsOn: [] }]);
+      board.assign(task.id, 'worker-1');
+      const revised = board.toRevising(task.id, 'tests failed');
+      const resumed = board.resumeRevision(task.id);
+      expect(resumed.status).toBe('assigned');
+      expect(resumed.assigneeSession).toBe('worker-1');
+      expect(resumed.attempts).toBe(revised.attempts);
+      expect(resumed.verdictReason).toBe('tests failed');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('requeues an orphaned revision while preserving attempts and feedback', () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create('argus-1', [{ title: 'a', spec: 'a', dependsOn: [] }]);
+      board.assign(task.id, 'worker-1');
+      const revised = board.toRevising(task.id, 'tests failed');
+      const requeued = board.clearAssigneeAndRequeue(task.id);
+      expect(requeued.status).toBe('pending');
+      expect(requeued.assigneeSession).toBeNull();
+      expect(requeued.attempts).toBe(revised.attempts);
+      expect(requeued.verdictReason).toBe('tests failed');
     } finally {
       fixture.cleanup();
     }

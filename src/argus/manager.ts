@@ -259,6 +259,14 @@ export class ArgusManager {
         .run(process.pid, dbNow, dbNow, argus.managerSessionId);
     }
 
+    this.recoverGatingTasks(id);
+
+    const cmds = gateCommandsFromConfig();
+    if (cmds.test.trim() === '' && cmds.lint.trim() === '') {
+      this.writeProgress(id, null, 'gates_disabled', 'no test or lint gate commands configured');
+      log.warn(`argus ${id}: no objective gates configured; work will go directly to brain review`);
+    }
+
     const stop = (): void => {
       this.db.prepare("UPDATE argus SET status = 'stopped', last_pulse_at = ? WHERE id = ?").run(now(), id);
       if (argus.managerSessionId) {
@@ -308,7 +316,9 @@ export class ArgusManager {
   private async processPendingEvents(id: string): Promise<void> {
     await this.answerQuestions(id);
     await this.runGatesForReported(id);
+    await this.resumeRevisions(id);
     await this.drainReviews(id);
+    await this.resumeRevisions(id);
   }
 
   /**
@@ -386,12 +396,10 @@ export class ArgusManager {
   async runGatesForReported(id: string, cmds: GateCommands = gateCommandsFromConfig()): Promise<void> {
     const argus = this.get(id);
     if (!argus) return;
-    const maxAttempts = Number(
-      (this.db.prepare('SELECT max_attempts_per_task FROM argus WHERE id = ?').get(id) as
-        { max_attempts_per_task?: number }).max_attempts_per_task ?? 3
-    );
+    const maxAttempts = this.maxAttemptsFor(id);
 
     for (const task of this.board.list(id, 'reported')) {
+      this.board.beginGating(task.id);
       const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
       const cwd = session?.cwd ?? this.projectRoot;
       const result = runGates(cwd, cmds);
@@ -402,10 +410,102 @@ export class ArgusManager {
         updated.status === 'in_review' ? 'gates_passed' : 'gates_failed',
         task.title
       );
-      if (updated.status === 'revising' && updated.attempts >= maxAttempts) {
+      if (updated.status === 'revising' && this.atAttemptLimit(updated, maxAttempts)) {
         this.board.block(task.id, `exhausted ${maxAttempts} attempts: ${result.failureTail}`);
         this.writeProgress(id, task.assigneeSession, 'task_blocked', task.title);
       }
+    }
+  }
+
+  private maxAttemptsFor(id: string): number {
+    return Number(
+      (this.db.prepare('SELECT max_attempts_per_task FROM argus WHERE id = ?').get(id) as {
+        max_attempts_per_task?: number;
+      }).max_attempts_per_task ?? 3
+    );
+  }
+
+  private atAttemptLimit(task: Task, maxAttempts: number): boolean {
+    return task.attempts >= maxAttempts;
+  }
+
+  /**
+   * Recovers a worker that exited without calling `report_done`. Each such
+   * task is moved to `revising` once so `resumeRevisions()` restarts the same
+   * worktree, and the attempt counter advances so a loop cannot spin forever.
+   */
+  private recoverOrphans(id: string): void {
+    const maxAttempts = this.maxAttemptsFor(id);
+    for (const task of this.board.list(id, 'assigned')) {
+      const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
+      if (!session || (session.status !== 'stopped' && session.status !== 'failed')) continue;
+      this.board.toRevising(task.id, 'worker exited before report_done');
+      this.writeProgress(id, task.assigneeSession, 'worker_orphaned', task.title);
+      if (this.atAttemptLimit(this.board.get(task.id)!, maxAttempts)) {
+        this.board.block(task.id, `exhausted ${maxAttempts} attempts: worker exited before report_done`);
+        this.writeProgress(id, task.assigneeSession, 'task_blocked', task.title);
+      }
+    }
+  }
+
+  /** Moves tasks left in `gating` by an interrupted process back to `reported`. */
+  private recoverGatingTasks(id: string): void {
+    for (const task of this.board.list(id, 'gating')) {
+      this.db
+        .prepare("UPDATE tasks SET status = 'reported', updated_at = ? WHERE id = ?")
+        .run(now(), task.id);
+      this.writeProgress(id, task.assigneeSession, 'gates_recovered', task.title);
+    }
+  }
+
+  /**
+   * Restarts every task awaiting a revision in its existing worktree, with the
+   * original spec, the failure feedback, and autonomy. A task is blocked at
+   * the attempt limit, requeued when its session row vanished, or left alone
+   * when a human has claimed the session.
+   */
+  async resumeRevisions(id: string): Promise<void> {
+    const maxAttempts = this.maxAttemptsFor(id);
+    for (const task of this.board.list(id, 'revising')) {
+      if (this.atAttemptLimit(task, maxAttempts)) {
+        this.board.block(task.id, `exhausted ${maxAttempts} attempts: ${task.verdictReason ?? 'revision requested'}`);
+        this.writeProgress(id, task.assigneeSession, 'task_blocked', task.title);
+        continue;
+      }
+      const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
+      if (!session) {
+        this.board.clearAssigneeAndRequeue(task.id);
+        this.writeProgress(id, task.assigneeSession, 'worker_requeued', task.title);
+        continue;
+      }
+      if (session.claimedAt !== null) {
+        this.writeProgress(id, session.id, 'revision_waiting_for_human', task.title);
+        continue;
+      }
+      if (session.status === 'running') {
+        await this.sessions.stopSession(session.id);
+      }
+      const prompt = [
+        'Your task requires revision in the same worktree.',
+        '',
+        `Task: ${task.title}`,
+        task.spec,
+        '',
+        'Feedback:',
+        task.verdictReason ?? 'Revision requested.',
+        task.gateResult?.failureTail ? `\nGate output:\n${task.gateResult.failureTail}` : '',
+        '',
+        'Fix the issue, rerun the relevant checks, then call `report_done` again.',
+      ].join('\n');
+      const restarted = await this.sessions.startSession(session.id, {
+        headless: true,
+        prompt,
+        autonomy: true,
+        waitForExit: false,
+        env: { FLIGHTDECK_ARGUS_ID: id },
+      });
+      this.board.resumeRevision(task.id);
+      this.writeProgress(id, restarted.id, 'worker_reprompted', task.title);
     }
   }
 
@@ -523,14 +623,18 @@ export class ArgusManager {
       await this.plan(id);
     }
 
+    await this.recoverOrphans(id);
+    await this.resumeRevisions(id);
     await this.dispatch(id);
     await this.runGatesForReported(id);
+    await this.resumeRevisions(id);
 
     if (this.questions.pending(id).length > 0) {
       await this.answerQuestions(id);
     }
     if (this.board.list(id, 'in_review').length > 0) {
       await this.drainReviews(id);
+      await this.resumeRevisions(id);
     }
 
     this.db.prepare('UPDATE argus SET last_pulse_at = ? WHERE id = ?').run(now(), id);
