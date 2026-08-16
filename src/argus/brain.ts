@@ -105,3 +105,58 @@ export function parseAnswer(stdout: string): { answer: string; faqKey: string } 
   const parsed = AnswerSchema.parse(extractJson(stdout));
   return { answer: parsed.answer, faqKey: parsed.faq_key };
 }
+
+import crypto from 'node:crypto';
+import { getDb } from '../core/state.js';
+import { SessionManager } from '../sessions/manager.js';
+import type { HarnessKind } from '../core/types.js';
+
+export interface BrainInvocation {
+  prompt: string;
+  /** Null means the harness default model. */
+  model: string | null;
+  /** Short label used in the session name, for example "plan" or "review". */
+  label: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Runs one brain call as its own short-lived `policy: 'brain'` session.
+ *
+ * Each invocation being a separate session is load-bearing: it makes budget
+ * accounting a plain sum over `session_telemetry` inside the window, and it
+ * guarantees the brain can never satisfy the `isManager` check, which
+ * requires `policy === 'manager'`.
+ */
+export async function invokeBrain(
+  projectRoot: string,
+  argusId: string,
+  opts: BrainInvocation
+): Promise<string> {
+  const argus = getDb(projectRoot)
+    .prepare('SELECT brain_harness FROM argus WHERE id = ?')
+    .get(argusId) as { brain_harness?: string } | undefined;
+  if (!argus) throw new Error(`argus "${argusId}" not found`);
+
+  const manager = new SessionManager(projectRoot);
+  const session = manager.createSession({
+    name: `brain-${opts.label}-${crypto.randomUUID().slice(0, 6)}`,
+    harness: (argus.brain_harness ?? 'claude') as HarnessKind,
+    cwd: projectRoot,
+    policy: 'brain',
+    argusParent: argusId,
+  });
+
+  let stdout = '';
+  await manager.startSession(session.id, {
+    headless: true,
+    prompt: opts.prompt,
+    waitForExit: true,
+    model: opts.model ?? undefined,
+    onStdout: (chunk) => {
+      stdout += chunk;
+    },
+    env: opts.env,
+  });
+  return stdout;
+}

@@ -25,6 +25,10 @@ export interface StartOptions {
   autonomy?: boolean;
   waitForExit?: boolean;
   env?: NodeJS.ProcessEnv;
+  /** Overrides the harness default model. Used for brain model tiering. */
+  model?: string;
+  /** Receives raw stdout chunks. Brain invocations use this to read JSON. */
+  onStdout?: (chunk: string) => void;
 }
 
 const running = new Map<string, ChildProcess>();
@@ -118,7 +122,11 @@ export class SessionManager {
       }
     }
 
-    adapter.writeMcpConfig(session, cwd, extraMcpEnv);
+    // A brain session returns JSON on stdout and calls no tools, so it must
+    // never receive an MCP config or a live session token.
+    if (session.policy !== 'brain') {
+      adapter.writeMcpConfig(session, cwd, extraMcpEnv);
+    }
 
     const profileEnv = adapter.profileEnv(session);
     const env: NodeJS.ProcessEnv = {
@@ -134,7 +142,7 @@ export class SessionManager {
     let logStream: fs.WriteStream | null = null;
 
     const args = opts.headless
-      ? adapter.sessionArgs(opts.prompt ?? '', { autonomy: opts.autonomy })
+      ? adapter.sessionArgs(opts.prompt ?? '', { autonomy: opts.autonomy, model: opts.model })
       : adapter.interactiveArgs();
 
     log.info(`starting session ${session.id} harness=${session.harness} headless=${opts.headless ?? false} cwd=${cwd}`);
@@ -165,8 +173,10 @@ export class SessionManager {
           renderLine: adapter.renderLine,
         });
         child.stdout?.on('data', (d) => {
+          const raw = d.toString();
+          opts.onStdout?.(raw);
           try {
-            const text = collector.feed(d.toString(), 'stdout');
+            const text = collector.feed(raw, 'stdout');
             if (text) logStream?.write(text);
           } catch {
             // ignore
