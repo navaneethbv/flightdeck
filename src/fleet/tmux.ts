@@ -69,6 +69,10 @@ export class Tmux {
     this.run(['kill-pane', '-t', paneId]);
   }
 
+  killSessionByName(name: string): void {
+    this.run(['kill-session', '-t', name]);
+  }
+
   listPanes(name: string): PaneInfo[] {
     const result = this.run([
       'list-panes', '-t', `${name}${WINDOW}`, '-F', '#{pane_id}\t#{@fd_session}\t#{pane_title}',
