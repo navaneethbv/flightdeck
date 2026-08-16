@@ -273,10 +273,42 @@ export class ArgusManager {
     process.on('SIGTERM', stop);
 
     log.info(`argus ${id} running with pulse=${argus.pulseSec}s childLimit=${argus.childLimit}`);
+    let nextPulseAt = 0;
     while (true) {
-      await this.pulse(id);
-      await sleep(argus.pulseSec * 1000);
+      const current = Date.now();
+      if (current >= nextPulseAt) {
+        await this.pulse(id);
+        nextPulseAt = Date.now() + argus.pulseSec * 1000;
+      } else if (this.hasPendingEvents(id)) {
+        await this.processPendingEvents(id);
+      }
+      await sleep(Math.min(250, Math.max(1, nextPulseAt - Date.now())));
     }
+  }
+
+  /**
+   * Cheap read-only check for work that must not wait for the next mission
+   * pulse: an unanswered question or a worker that reported a task. An
+   * intentionally batched `in_review` queue is deliberately excluded so the
+   * 250 ms scheduler does not repeatedly reconsider a queue that is waiting
+   * for four tasks or a 30-minute-old task.
+   */
+  private hasPendingEvents(id: string): boolean {
+    const question = this.db
+      .prepare('SELECT 1 FROM questions WHERE argus_id = ? AND answer IS NULL LIMIT 1')
+      .get(id);
+    if (question) return true;
+    const reported = this.db
+      .prepare('SELECT 1 FROM tasks WHERE argus_id = ? AND status = ? LIMIT 1')
+      .get(id, 'reported');
+    return Boolean(reported);
+  }
+
+  /** Handles worker events between mission pulses, without any model polling. */
+  private async processPendingEvents(id: string): Promise<void> {
+    await this.answerQuestions(id);
+    await this.runGatesForReported(id);
+    await this.drainReviews(id);
   }
 
   /**

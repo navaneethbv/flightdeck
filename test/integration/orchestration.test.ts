@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { QuestionQueue } from '../../src/argus/questions.js';
 import { NotesStore } from '../../src/notes/store.js';
+import { SessionManager } from '../../src/sessions/manager.js';
+import { ToolRegistry } from '../../src/mcp/tools.js';
+import { saveConfig, loadConfig } from '../../src/core/config.js';
 import { getDb } from '../../src/core/state.js';
-import { makeRepo } from '../helpers.js';
+import { makeRepo, spawnCli, sleep } from '../helpers.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
 function fakeBrain(responses: Record<string, string>) {
@@ -16,6 +22,53 @@ function fakeBrain(responses: Record<string, string>) {
     return responses[opts.label] ?? '{}';
   };
   return { fn, calls, prompts };
+}
+
+function waitFor<T>(probe: () => T | null, timeoutMs = 15000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise<T>((resolve, reject) => {
+    const poll = (): void => {
+      const value = probe();
+      if (value !== null && value !== undefined) {
+        resolve(value);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${probe.toString().slice(0, 80)}`));
+        return;
+      }
+      setTimeout(poll, 100);
+    };
+    poll();
+  });
+}
+
+/**
+ * A binDir with a claude that plans one task, answers questions, and accepts
+ * review, plus an inert opencode. The answer counter file proves the child
+ * process answers an uncached question promptly.
+ */
+function makeWakingBrain(answerLog: string): { binDir: string; cleanup(): void } {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+  const claude = [
+    '#!/bin/bash',
+    'ARGS="$*"',
+    'if echo "$ARGS" | grep -q "Review the completed tasks below"; then',
+    '  TASK_ID=$(echo "$ARGS" | grep -oE "Task [0-9a-f-]+:" | head -1 | sed "s/Task //;s/://")',
+    `  echo "{\\"verdicts\\":[{\\"task_id\\":\\"$TASK_ID\\",\\"verdict\\":\\"accept\\"}]}"`,
+    '  exit 0',
+    'fi',
+    'if echo "$ARGS" | grep -q "has a question"; then',
+    `  echo "answer" >> "${answerLog}"`,
+    '  echo \'{"answer":"Run npm test","faq_key":"test-command"}\'',
+    '  exit 0',
+    'fi',
+    'echo \'{"tasks":[{"title":"wake task","spec":"do the wake task","depends_on":[]}]}\'',
+    'exit 0',
+  ].join('\n');
+  fs.writeFileSync(path.join(binDir, 'claude'), claude, { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\necho "fake opencode ran with: $@"\nexit 0\n', { mode: 0o755 });
+  return { binDir, cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }) };
 }
 
 describe('orchestration', () => {
@@ -263,6 +316,152 @@ describe('orchestration', () => {
       await manager.drainReviews(argusId);
       expect(reviewCalls).toBe(1);
     } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('answers a question before a long mission pulse', async () => {
+    const fixture = makeRepo();
+    const answerLog = path.join(fixture.root, 'answer-log.txt');
+    const fake = makeWakingBrain(answerLog);
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        [
+          'argus', 'start',
+          '--name', 'wake',
+          '--mission', mission.id,
+          '--children', '2',
+          '--pulse', '1h',
+          '--question-timeout', '3s',
+        ],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      let stderr = '';
+      child.stderr?.on('data', (d) => (stderr += d));
+
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'wake') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'wake')!.id;
+      await waitFor(() => (new TaskBoard(fixture.root).list(argusId).length > 0 ? argusId : null));
+
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'wake-worker',
+        harness: 'opencode',
+        cwd: fixture.root,
+        policy: 'child',
+        argusParent: argusId,
+      });
+      const registry = new ToolRegistry({
+        projectRoot: fixture.root,
+        sessionId: worker.id,
+        policy: 'child',
+        isManager: false,
+        riskyTools: false,
+        confirm: async () => false,
+      });
+
+      const started = Date.now();
+      const result = (await registry.call('ask_manager', {
+        question: 'What is the test command?',
+      })) as Record<string, unknown>;
+      const elapsed = Date.now() - started;
+
+      expect(elapsed, `stderr: ${stderr}`).toBeLessThan(3000);
+      expect(result).toMatchObject({ answer: 'Run npm test', cached: false });
+
+      // The child manager must not poll the brain on idle scheduler ticks.
+      await sleep(2000);
+      const log = fs.existsSync(answerLog) ? fs.readFileSync(answerLog, 'utf8').trim() : '';
+      expect(log.split('\n').filter((l) => l === 'answer')).toHaveLength(1);
+
+      child.kill('SIGTERM');
+      const code = await new Promise<number | null>((resolve) => child.on('close', (c) => resolve(c)));
+      expect(code).toBe(0);
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('runs gates and review promptly after report_done on a long pulse', async () => {
+    const fixture = makeRepo();
+    const answerLog = path.join(fixture.root, 'answer-log.txt');
+    const fake = makeWakingBrain(answerLog);
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    const previousConfig = loadConfig();
+    saveConfig({
+      defaultHarness: 'opencode',
+      profileDir: {},
+      argus: {
+        defaultPulseSec: 60,
+        defaultChildLimit: 8,
+        allowedLimits: [2, 4, 8, 16],
+        gateTestCommand: '',
+        gateLintCommand: '',
+      },
+      models: {},
+    });
+    try {
+      const child = spawnCli(
+        [
+          'argus', 'start',
+          '--name', 'wake-review',
+          '--mission', mission.id,
+          '--children', '2',
+          '--pulse', '1h',
+        ],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      let stderr = '';
+      child.stderr?.on('data', (d) => (stderr += d));
+
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'wake-review') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'wake-review')!.id;
+      await waitFor(() => (new TaskBoard(fixture.root).list(argusId).length > 0 ? argusId : null));
+      const task = new TaskBoard(fixture.root).list(argusId)[0];
+
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'wake-worker',
+        harness: 'opencode',
+        cwd: fixture.root,
+        policy: 'child',
+        argusParent: argusId,
+      });
+      const board = new TaskBoard(fixture.root);
+      board.assign(task.id, worker.id);
+      const registry = new ToolRegistry({
+        projectRoot: fixture.root,
+        sessionId: worker.id,
+        policy: 'child',
+        isManager: false,
+        riskyTools: false,
+        confirm: async () => false,
+      });
+
+      const started = Date.now();
+      await registry.call('report_done', {
+        summary: 'did it',
+        files_changed: ['proof.txt'],
+        tests_run: '',
+        uncertainties: '',
+      });
+      await waitFor(() => (board.get(task.id)?.status === 'done' ? task.id : null), 10000);
+      const elapsed = Date.now() - started;
+
+      expect(elapsed, `stderr: ${stderr}`).toBeLessThan(10000);
+      expect(board.get(task.id)?.status).toBe('done');
+      expect(board.get(task.id)?.workerReport?.summary).toBe('did it');
+
+      child.kill('SIGTERM');
+      const code = await new Promise<number | null>((resolve) => child.on('close', (c) => resolve(c)));
+      expect(code).toBe(0);
+    } finally {
+      saveConfig(previousConfig);
+      fake.cleanup();
       fixture.cleanup();
     }
   });
