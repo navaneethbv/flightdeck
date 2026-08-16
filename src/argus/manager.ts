@@ -8,11 +8,20 @@ import { TablesStore } from '../tables/store.js';
 import { createWorktree } from '../worktrees/manager.js';
 import { log } from '../core/logger.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { TaskBoard } from './board.js';
+import { TaskBoard, type TaskDraft } from './board.js';
 import { budgetState, reviewBatchSize } from './budget.js';
 import { runGates, computeDiffstat, gateCommandsFromConfig, type GateCommands } from './gates.js';
 import { QuestionQueue } from './questions.js';
-import { invokeBrain, parsePlan, parseReview, parseAnswer, type BrainInvocation, type Verdict } from './brain.js';
+import {
+  invokeBrain,
+  parsePlan,
+  parseReview,
+  parseAnswer,
+  validateReviewCoverage,
+  BrainContractError,
+  type BrainInvocation,
+  type Verdict,
+} from './brain.js';
 import { loadReviewFiles } from './review-files.js';
 
 export interface StartArgusOptions {
@@ -346,7 +355,12 @@ export class ArgusManager {
         'Reply again with a single valid JSON object and no other text.',
       ].join('\n');
       const retried = await this.brain(this.projectRoot, id, { ...opts, prompt: retryPrompt });
-      return parse(retried);
+      try {
+        return parse(retried);
+      } catch (second) {
+        this.writeProgress(id, null, 'brain_abandoned', (second as Error).message);
+        throw new BrainContractError(opts.label, (second as Error).message);
+      }
     }
   }
 
@@ -379,11 +393,25 @@ export class ArgusManager {
       'Do not write any prose outside the JSON object.',
     ].join('\n');
 
-    const drafts = await this.brainJson(
-      id,
-      { prompt, model: row.brain_plan_model ?? null, label: 'plan' },
-      parsePlan
-    );
+    let drafts: TaskDraft[];
+    try {
+      drafts = await this.brainJson(
+        id,
+        { prompt, model: row.brain_plan_model ?? null, label: 'plan' },
+        parsePlan
+      );
+    } catch (err) {
+      if (err instanceof BrainContractError) {
+        this.db.prepare("UPDATE argus SET status = 'stopped' WHERE id = ?").run(id);
+        if (argus.managerSessionId) {
+          this.db
+            .prepare("UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?")
+            .run(now(), now(), argus.managerSessionId);
+        }
+        throw err;
+      }
+      throw err;
+    }
     const room = Math.max(0, Number(row.max_tasks ?? 100) - existing.length);
     const created = this.board.create(id, drafts.slice(0, room));
     this.writeProgress(id, null, 'planned', `tasks=${created.length}`);
@@ -560,11 +588,23 @@ export class ArgusManager {
         : 'The token budget is constrained. Do not use "need_files"; decide from the summary, or return "revise" with a concrete reason.',
     ].join('\n');
 
-    const verdicts = await this.brainJson(
-      id,
-      { prompt, model: row.brain_review_model ?? null, label: 'review' },
-      parseReview
-    );
+    let verdicts: Verdict[];
+    try {
+      verdicts = await this.brainJson(
+        id,
+        { prompt, model: row.brain_review_model ?? null, label: 'review' },
+        (stdout) => validateReviewCoverage(batch, parseReview(stdout))
+      );
+    } catch (err) {
+      if (err instanceof BrainContractError) {
+        for (const task of batch) {
+          this.board.block(task.id, `brain review was malformed twice: ${err.causeMessage}`);
+        }
+        this.writeProgress(id, null, 'review_failed', batch.map((t) => t.id).join(', '));
+        return;
+      }
+      throw err;
+    }
 
     for (const verdict of verdicts) {
       if (verdict.verdict === 'need_files') {
@@ -636,17 +676,21 @@ export class ArgusManager {
       '{"verdicts":[{"task_id":"...","verdict":"accept|revise","reason":"..."}]}',
     ].join('\n');
 
-    const tier2 = await this.brainJson(
-      id,
-      { prompt, model: row.brain_plan_model ?? null, label: 'review-files' },
-      (stdout) => {
-        const verdicts = parseReview(stdout);
-        if (verdicts.length !== 1 || verdicts[0].taskId !== task.id) {
-          throw new Error(`expected exactly one verdict for ${task.id}`);
-        }
-        return verdicts;
+    let tier2: Verdict[];
+    try {
+      tier2 = await this.brainJson(
+        id,
+        { prompt, model: row.brain_plan_model ?? null, label: 'review-files' },
+        (stdout) => validateReviewCoverage([task], parseReview(stdout))
+      );
+    } catch (err) {
+      if (err instanceof BrainContractError) {
+        this.board.block(task.id, `tier 2 file review was malformed twice: ${err.causeMessage}`);
+        this.writeProgress(id, task.assigneeSession, 'review_files_failed', task.id);
+        return;
       }
-    );
+      throw err;
+    }
     const second = tier2[0];
     if (second.verdict === 'accept') {
       this.board.recordVerdict(task.id, 'accept', second.reason);
@@ -686,13 +730,23 @@ export class ArgusManager {
         'Reply with JSON only:',
         '{"answer":"...","faq_key":"short-kebab-case-topic"}',
       ].join('\n');
-      const parsed = await this.brainJson(
-        id,
-        { prompt, model: row.brain_review_model ?? null, label: 'answer' },
-        parseAnswer
-      );
-      this.questions.answer(question.id, parsed.answer, parsed.faqKey);
-      this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
+      try {
+        const parsed = await this.brainJson(
+          id,
+          { prompt, model: row.brain_review_model ?? null, label: 'answer' },
+          parseAnswer
+        );
+        this.questions.answer(question.id, parsed.answer, parsed.faqKey);
+        this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
+      } catch (err) {
+        if (err instanceof BrainContractError) {
+          // The question stays unanswered so the waiting worker receives its
+          // normal timeout directive, and the manager keeps serving later work.
+          this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);
+          continue;
+        }
+        throw err;
+      }
     }
   }
 

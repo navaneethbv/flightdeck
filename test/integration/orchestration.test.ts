@@ -7,6 +7,7 @@ import { Override } from '../../src/argus/override.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { QuestionQueue } from '../../src/argus/questions.js';
 import { NotesStore } from '../../src/notes/store.js';
+import { TablesStore } from '../../src/tables/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
@@ -333,6 +334,158 @@ describe('orchestration', () => {
       }
 
       expect(board.get(task.id)?.status).toBe('blocked');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('stops the argus after a malformed plan twice without a third call', async () => {
+    const fixture = makeRepo();
+    try {
+      let calls = 0;
+      const manager = new ArgusManager(fixture.root, async () => {
+        calls += 1;
+        return 'still not JSON';
+      });
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ name: 'fleet', missionNoteId: mission.id });
+
+      await expect(manager.plan(argus.id)).rejects.toThrow(/malformed twice/);
+      expect(calls).toBe(2);
+      expect(manager.get(argus.id)?.status).toBe('stopped');
+      const progress = new TablesStore(fixture.root).query('argus_progress', {
+        where: { argus_id: argus.id }, limit: 20,
+      });
+      expect(progress.map((r) => String(r.event))).toContain('brain_abandoned');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('blocks every task in a batch whose review is malformed twice', async () => {
+    const fixture = makeRepo();
+    try {
+      let reviewCalls = 0;
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        if (opts.label !== 'review') return '{}';
+        reviewCalls += 1;
+        return 'this is not json';
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      // Conserve tier (70 percent spend) batches up to four tasks together.
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET budget_max_tokens = 1000 WHERE id = ?')
+        .run(argusId);
+      getDb(fixture.root)
+        .prepare(
+          "INSERT INTO sessions (id, name, harness, project_root, cwd, status, token, policy, argus_parent, started_at, last_activity_at) VALUES ('bs1', 'bs1', 'claude', ?, ?, 'stopped', 'tok', 'brain', ?, ?, ?)"
+        )
+        .run(fixture.root, fixture.root, argusId, now(), now());
+      getDb(fixture.root)
+        .prepare('INSERT INTO session_telemetry (session_id, input_tokens, output_tokens, updated_at) VALUES (?, ?, ?, ?)')
+        .run('bs1', 600, 100, now());
+      const [t1, t2] = board.create(argusId, [
+        { title: 'a', spec: 'a', dependsOn: [] },
+        { title: 'b', spec: 'b', dependsOn: [] },
+      ]);
+      for (const t of [t1, t2]) {
+        board.assign(t.id, `w-${t.id}`);
+        board.report(t.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+        board.beginGating(t.id);
+        board.recordGates(t.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+      }
+
+      await manager.drainReviews(argusId);
+
+      expect(reviewCalls).toBe(2);
+      for (const t of [t1, t2]) {
+        expect(board.get(t.id)?.status).toBe('blocked');
+        expect(String(board.get(t.id)?.verdictReason)).toContain('malformed');
+      }
+      const progress = new TablesStore(fixture.root).query('argus_progress', {
+        where: { argus_id: argusId }, limit: 20,
+      });
+      expect(progress.map((r) => String(r.event))).toContain('review_failed');
+
+      // Later scheduler checks must not re-review the blocked tasks.
+      await manager.drainReviews(argusId);
+      expect(reviewCalls).toBe(2);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('blocks only the affected task when tier 2 review is malformed twice', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      let tier2Calls = 0;
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        const queued = board.list(argusId, 'in_review');
+        const id = queued[0]?.id ?? '';
+        if (opts.label === 'review') {
+          return `{"verdicts":[{"task_id":"${id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
+        }
+        if (opts.label === 'review-files') {
+          tier2Calls += 1;
+          return 'still not json';
+        }
+        return '{}';
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(worktree, { recursive: true });
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1', harness: 'opencode', cwd: worktree, policy: 'child', argusParent: argusId,
+      });
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      await manager.drainReviews(argusId);
+
+      expect(tier2Calls).toBe(2);
+      expect(board.get(task.id)?.status).toBe('blocked');
+      const progress = new TablesStore(fixture.root).query('argus_progress', {
+        where: { argus_id: argusId }, limit: 20,
+      });
+      expect(progress.map((r) => String(r.event))).toContain('review_files_failed');
+      await manager.drainReviews(argusId);
+      expect(tier2Calls).toBe(2);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps the manager alive when answering a question with malformed output twice', async () => {
+    const fixture = makeRepo();
+    try {
+      let answerCalls = 0;
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        if (opts.label === 'answer') answerCalls += 1;
+        return 'not json';
+      });
+      const argus = manager.start({ name: 'fleet' });
+      const queue = new QuestionQueue(fixture.root);
+      const asked = queue.ask(argus.id, 'worker-1', 'help?');
+      if (asked.hit) throw new Error('expected a cache miss');
+
+      await manager.answerQuestions(argus.id);
+
+      expect(answerCalls).toBe(2);
+      expect(queue.get(asked.id)?.answer).toBeNull();
+      expect(manager.get(argus.id)?.status).toBe('stopped');
+      const progress = new TablesStore(fixture.root).query('argus_progress', {
+        where: { argus_id: argus.id }, limit: 20,
+      });
+      expect(progress.map((r) => String(r.event))).toContain('question_failed');
     } finally {
       fixture.cleanup();
     }

@@ -1,5 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { extractJson, parsePlan, parseReview, parseAnswer } from '../../src/argus/brain.js';
+import { extractJson, parsePlan, parseReview, parseAnswer, validateReviewCoverage } from '../../src/argus/brain.js';
+
+function taskLike(id: string): { id: string } {
+  return { id };
+}
+
+describe('validateReviewCoverage', () => {
+  it('accepts a complete set of verdicts', () => {
+    const verdicts = parseReview(
+      '{"verdicts":[{"task_id":"t1","verdict":"accept"},{"task_id":"t2","verdict":"revise"}]}'
+    );
+    const verified = validateReviewCoverage([taskLike('t1'), taskLike('t2')], verdicts);
+    expect(verified).toHaveLength(2);
+  });
+
+  it('rejects a verdict for a task outside the batch', () => {
+    const verdicts = parseReview('{"verdicts":[{"task_id":"t3","verdict":"accept"}]}');
+    expect(() => validateReviewCoverage([taskLike('t1'), taskLike('t2')], verdicts)).toThrow(/unexpected task id t3/);
+  });
+
+  it('rejects a duplicated task id', () => {
+    const verdicts = parseReview(
+      '{"verdicts":[{"task_id":"t1","verdict":"accept"},{"task_id":"t1","verdict":"revise"}]}'
+    );
+    expect(() => validateReviewCoverage([taskLike('t1'), taskLike('t2')], verdicts)).toThrow(/duplicate verdict/);
+  });
+
+  it('rejects a missing verdict', () => {
+    const verdicts = parseReview('{"verdicts":[{"task_id":"t1","verdict":"accept"}]}');
+    expect(() => validateReviewCoverage([taskLike('t1'), taskLike('t2')], verdicts)).toThrow(/missing verdicts/);
+  });
+});
 
 describe('extractJson', () => {
   it('finds the JSON object inside conversational output', () => {
