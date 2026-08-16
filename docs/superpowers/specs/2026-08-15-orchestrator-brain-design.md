@@ -270,7 +270,8 @@ Revisit once real consumption has been measured.
 | 80 to 95% | Batch all pending. Drain only at 4 or more queued, or a task aged past 30 minutes. |
 | over 95% | Review draining pauses. Workers continue. Backlog depth and window reset time are surfaced. |
 
-Twenty percent of the ceiling is reserved for the question path so a heavy review batch cannot starve `ask_manager`.
+The band between the review pause at 95 percent and the ceiling is reserved for the question path, so a heavy review batch cannot starve `ask_manager`.
+Reviews stop at 95 percent; questions continue to be answered until the ceiling itself is reached.
 Reviews can wait.
 A worker about to build on a wrong assumption cannot.
 
