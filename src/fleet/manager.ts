@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import { normalizeProjectRoot } from '../core/paths.js';
+import { getDb, now } from '../core/state.js';
 import { cliEntryPath } from '../core/cliEntry.js';
 import { SessionManager } from '../sessions/manager.js';
+import { getAdapter } from '../sessions/harness.js';
 import { Tmux } from './tmux.js';
 import { planReconcile, paneTitle, type FleetSession } from './reconcile.js';
 
@@ -102,5 +104,82 @@ export class FleetManager {
 
   titleFor(session: FleetSession): string {
     return paneTitle(session);
+  }
+
+  /**
+   * Hands one worker to the human.
+   *
+   * The headless process stops, then the same pane is respawned running the
+   * harness interactively in the same worktree. The session row, worktree,
+   * generated MCP config, and token all survive, so `task_get`,
+   * `report_done`, and `ask_manager` keep working while a human drives it.
+   *
+   * tmux owns the pane's pseudo-terminal, which is why flightdeck never has
+   * to emulate one.
+   */
+  async claim(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`session "${sessionId}" not found`);
+    if (session.policy === 'brain' || session.policy === 'manager') {
+      throw new Error(`session "${sessionId}" is not a worker and cannot be claimed`);
+    }
+    const paneId = this.paneFor(sessionId);
+    if (!paneId) throw new Error(`session "${sessionId}" has no fleet pane to claim`);
+
+    if (session.status === 'running') {
+      await this.sessions.stopSession(sessionId);
+    }
+
+    const adapter = getAdapter(session.harness);
+    // Deliberately no FLIGHTDECK_SESSION_TOKEN. Every tmux argument is visible
+    // to `ps`, including a -e value, so there is no safe way to pass a secret
+    // here. There is also no need: nothing reads that variable from the
+    // environment, and the session's generated MCP config already hands the
+    // token to the MCP server through its --token argument.
+    const env: Record<string, string> = {
+      ...(adapter.profileEnv(session) as Record<string, string>),
+      FLIGHTDECK_SESSION_ID: session.id,
+    };
+    this.tmux.respawnPane(
+      paneId,
+      session.cwd,
+      [adapter.binary, ...adapter.interactiveArgs()],
+      env
+    );
+
+    getDb(this.projectRoot)
+      .prepare("UPDATE sessions SET claimed_at = ?, status = 'running' WHERE id = ?")
+      .run(now(), sessionId);
+    this.tmux.setPaneTitle(paneId, paneTitle(this.fleetSessionOf(sessionId)));
+  }
+
+  /** Ends a claim. Returns the pane to tailing, or restarts the worker headless. */
+  async release(sessionId: string, opts: { resume?: boolean } = {}): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`session "${sessionId}" not found`);
+
+    getDb(this.projectRoot)
+      .prepare('UPDATE sessions SET claimed_at = NULL WHERE id = ?')
+      .run(sessionId);
+
+    const paneId = this.paneFor(sessionId);
+    if (paneId) {
+      this.tmux.respawnPane(
+        paneId,
+        session.cwd,
+        this.deckCommand(['session', 'follow', sessionId])
+      );
+      this.tmux.setPaneTitle(paneId, paneTitle(this.fleetSessionOf(sessionId)));
+    }
+
+    if (opts.resume) {
+      await this.sessions.restartSession(sessionId, { headless: true, waitForExit: false });
+    }
+  }
+
+  private fleetSessionOf(sessionId: string): FleetSession {
+    const found = this.fleetSessions().find((s) => s.id === sessionId);
+    if (!found) throw new Error(`session "${sessionId}" not found`);
+    return found;
   }
 }
