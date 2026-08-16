@@ -101,14 +101,31 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   };
 }
 
+/** A zero-I/O placeholder shown for the single frame before the first real
+ * snapshot loads, so the static section headers paint immediately instead of
+ * waiting behind loadSnapshot's tmux subprocess calls and DB queries. */
+function emptySnapshot(): Omit<ConsoleSnapshot, 'tick'> {
+  return {
+    sessions: [],
+    argusId: null,
+    tasks: [],
+    reviewQueueDepth: 0,
+    nextBudgetResetAt: null,
+    spent: 0,
+    ceiling: 0,
+    tier: 'normal',
+    progress: [],
+    fleetError: null,
+  };
+}
+
 function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
-  // Lazy initializer: React only calls this on the first render. Passing the
-  // computed object directly would call loadSnapshot() (which runs several
-  // blocking tmux subprocess calls plus DB queries) on every re-render,
-  // including one on every keystroke, which both wastes CPU and delays the
-  // very first paint behind synchronous I/O.
+  // The initial state does no I/O, so Ink's first frame paints immediately.
+  // loadSnapshot() (several blocking tmux subprocess calls plus DB queries)
+  // only ever runs inside the effect below, after that first paint, and on
+  // its own 2 second cadence after that, never on every re-render.
   const [snap, setSnap] = useState<ConsoleSnapshot>(() => ({
-    ...loadSnapshot(projectRoot),
+    ...emptySnapshot(),
     tick: 0,
   }));
 
@@ -120,6 +137,7 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
         // transient lock or missing tmux session; retry on the next tick
       }
     };
+    load();
     const timer = setInterval(load, 2000);
     return () => clearInterval(timer);
   }, [projectRoot]);
