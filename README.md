@@ -98,7 +98,11 @@ deck session start bugfix-123 --harness gemini --worktree-new bugfix-branch --he
 
 ### 3. Launch the web dashboard
 ```bash
-# Opens the real-time 3-column dashboard in your default browser at http://127.0.0.1:4173
+# Opens the real-time 3-column dashboard in your default browser.
+# deck ui prints the URL with a per-process capability token embedded in the
+# fragment, e.g. http://127.0.0.1:4173/#token=..., and the dashboard stays
+# behind a login screen until the token is presented. Every /api/* request
+# must carry it; static assets load without it so the page can show the gate.
 deck ui
 ```
 
@@ -200,7 +204,7 @@ deck argus start \
 ### User Interfaces & Diagnostics
 | Command | Description |
 | :--- | :--- |
-| `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane |
+| `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane (protected by a capability token printed with the URL) |
 | `deck tui` | Open the interactive 3-tab terminal dashboard |
 | `deck doctor [--fix]` | Run environment diagnostics and repair state issues |
 | `deck repair` | Self-heal project directories, dead sessions, and worktree references |
