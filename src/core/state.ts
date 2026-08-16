@@ -195,6 +195,17 @@ function migrate(db: DatabaseSync): void {
       // column already exists
     }
   }
+  const lateColumns: [string, string][] = [
+    ['sessions', 'claimed_at INTEGER'],
+    ['tasks', 'priority INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [table, col] of lateColumns) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
 }
 
 export function now(): number {

@@ -51,6 +51,7 @@ export function rowToSession(row: Record<string, unknown>): Session {
     endedAt: row.ended_at === null ? null : Number(row.ended_at),
     lastActivityAt: Number(row.last_activity_at),
     exitCode: row.exit_code === null ? null : Number(row.exit_code),
+    claimedAt: row.claimed_at === null || row.claimed_at === undefined ? null : Number(row.claimed_at),
   };
 }
 

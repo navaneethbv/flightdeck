@@ -8,6 +8,24 @@ import { repairProject } from '../../core/repair.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
+/**
+ * tmux 3.0 introduced `respawn-pane -e`, which is how claim passes environment
+ * without putting a session token in argv where `ps` would expose it. An older
+ * tmux is reported as not usable rather than silently downgraded.
+ */
+function tmuxCheck(): { name: string; ok: boolean; detail: string } {
+  const result = spawnSync('tmux', ['-V'], { encoding: 'utf8' });
+  if (result.status !== 0 || !result.stdout) {
+    return { name: 'tmux', ok: false, detail: 'not installed (only `deck fleet` needs it)' };
+  }
+  const version = result.stdout.trim();
+  const major = Number(/tmux (\d+)/.exec(version)?.[1] ?? 0);
+  if (major < 3) {
+    return { name: 'tmux', ok: false, detail: `${version}, but 3.0 or newer is required` };
+  }
+  return { name: 'tmux', ok: true, detail: version };
+}
+
 function runDoctorChecks(root: string): { name: string; ok: boolean; detail: string }[] {
   const checks: { name: string; ok: boolean; detail: string }[] = [];
   const git = gitVersion();
@@ -17,6 +35,7 @@ function runDoctorChecks(root: string): { name: string; ok: boolean; detail: str
     const detected = adapter.detect();
     checks.push({ name: `harness:${kind}`, ok: detected, detail: detected ? `${adapter.binary} detected` : 'not installed' });
   }
+  checks.push(tmuxCheck());
   const repo = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
   const isRepo = repo.status === 0;
   checks.push({ name: 'git-repo', ok: isRepo, detail: isRepo ? root : 'current directory is not a git repo' });
