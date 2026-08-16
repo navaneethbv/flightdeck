@@ -4,7 +4,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
-import { runCli, spawnCli, makeRepo, sleep } from '../helpers.js';
+import { runCli, spawnCli, makeRepo } from '../helpers.js';
+
+/** Polls `probe` until it returns a truthy value or `timeoutMs` elapses. */
+async function waitFor<T>(probe: () => T | null, timeoutMs = 15000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() >= deadline) throw new Error('timed out waiting for the argus fleet to be created');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
 
 describe('orchestrator CLI', () => {
   it('prints the board as JSON', () => {
@@ -111,7 +122,10 @@ describe('orchestrator CLI', () => {
       let stderr = '';
       child.stderr?.on('data', (d) => (stderr += d));
 
-      await sleep(4500);
+      await waitFor(() => {
+        const found = new ArgusManager(fixture.root).list().find((a) => a.name === 'codex-opencode');
+        return found ?? null;
+      });
 
       const manager = new ArgusManager(fixture.root);
       const argus = manager.list().find((a) => a.name === 'codex-opencode');
@@ -122,6 +136,10 @@ describe('orchestrator CLI', () => {
       expect(argus!.workerHarnesses).toEqual(['opencode']);
       expect(argus!.budgetWindowSec).toBe(7200);
       expect(argus!.budgetMaxTokens).toBe(250000);
+      await waitFor(() => {
+        const tasks = new TaskBoard(fixture.root).list(argus!.id);
+        return tasks.length === 1 ? tasks : null;
+      });
       expect(new TaskBoard(fixture.root).list(argus!.id)).toHaveLength(1);
 
       child.kill('SIGTERM');

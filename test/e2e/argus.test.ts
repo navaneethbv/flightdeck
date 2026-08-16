@@ -7,7 +7,18 @@ import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { getDb } from '../../src/core/state.js';
-import { makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
+import { makeRepo, makeFakeHarness, spawnCli } from '../helpers.js';
+
+/** Polls `probe` until it returns a truthy value or `timeoutMs` elapses. */
+async function waitFor<T>(probe: () => T | null, timeoutMs = 15000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() >= deadline) throw new Error('timed out waiting for the argus fleet to be ready');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
 
 /** A fake brain that returns a fixed plan, so no model is ever invoked. */
 function fakeBrain(planJson: string) {
@@ -88,11 +99,24 @@ describe('Argus', () => {
       let stderr = '';
       child.stderr?.on('data', (d) => (stderr += d));
 
-      await sleep(4500);
+      await waitFor(() => {
+        const found = new ArgusManager(fixture.root).list().find((a) => a.name === 'e2e-loop');
+        if (!found || found.status !== 'running') return null;
+        const board = new TaskBoard(fixture.root).list(found.id);
+        if (board.length !== 2) return null;
+        const fleet = new ArgusManager(fixture.root).fleet(found.id);
+        if (fleet.children.length < 1) return null;
+        // The session row exists as soon as createSession assigns the task, but
+        // the spawn completes only when writeProgress records 'worker_spawned'.
+        // Wait for the event so the post-poll assertion cannot race it.
+        const events = fleet.recentProgress.map((p) => String(p.event));
+        if (!events.includes('worker_spawned')) return null;
+        return found;
+      });
 
       const manager = new ArgusManager(fixture.root);
       const argus = manager.list().find((a) => a.name === 'e2e-loop');
-      expect(argus).toBeDefined();
+      expect(argus, `stderr: ${stderr}`).toBeDefined();
       expect(argus!.status).toBe('running');
       // The fake claude brain plans the mission into board rows; the loop then
       // dispatches workers against them.

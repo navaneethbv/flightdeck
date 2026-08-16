@@ -241,4 +241,83 @@ describe('deck login', () => {
       fakes.forEach((f) => f.cleanup());
     }
   });
+
+  it('aggregates mixed results across named harnesses and exits non-zero', () => {
+    const fake = makeFakeHarness('claude');
+    const binDir = fakeBinary('codex', 'exit 3');
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = `${fake.binDir}:${binDir}:${oldPath ?? ''}`;
+      const result = runCli(['login', 'claude', 'codex', '--json'], {
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+      });
+      expect(result.code).toBe(1);
+      const parsed = JSON.parse(result.stdout) as { ok: boolean; results: unknown[] };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.results).toEqual([
+        { kind: 'claude', installed: true, action: 'login', ok: true, exitCode: 0 },
+        { kind: 'codex', installed: true, action: 'login', ok: false, exitCode: 3 },
+      ]);
+    } finally {
+      process.env.PATH = oldPath;
+      fake.cleanup();
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a readable FAIL line when the login flow fails interactively', () => {
+    const binDir = fakeBinary('opencode', 'exit 7');
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = `${binDir}:${oldPath ?? ''}`;
+      const result = runCli(['login', 'opencode'], { cwd: process.cwd(), env: { PATH: process.env.PATH } });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain('opencode');
+      expect(result.stdout).toContain('login failed');
+      expect(result.stdout).toContain('(exit 7)');
+    } finally {
+      process.env.PATH = oldPath;
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a readable check result in interactive mode', () => {
+    const fake = makeFakeHarness('claude');
+    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-login-profile-'));
+    const oldPath = process.env.PATH;
+    try {
+      writeConfig({ profileDir: { claude: profileDir } });
+      process.env.PATH = `${fake.binDir}:${oldPath ?? ''}`;
+
+      const withoutCred = runCli(['login', 'claude', '--check'], {
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+      });
+      expect(withoutCred.code).toBe(1);
+      expect(withoutCred.stdout).toContain('not authenticated');
+
+      fs.writeFileSync(path.join(profileDir, '.credentials.json'), '{}');
+      const withCred = runCli(['login', 'claude', '--check'], {
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+      });
+      expect(withCred.code).toBe(0);
+      expect(withCred.stdout).toContain('authenticated');
+      expect(withCred.stdout).not.toContain('not authenticated');
+    } finally {
+      process.env.PATH = oldPath;
+      clearConfig();
+      fs.rmSync(profileDir, { recursive: true, force: true });
+      fake.cleanup();
+    }
+  });
+
+  it('falls back to the home directory when no config or env pins a profile dir', () => {
+    const HOME = '/flightdeck-test-home';
+    expect(adapters.claude.authFiles({ HOME })).toEqual(['/flightdeck-test-home/.claude/.credentials.json']);
+    expect(adapters.codex.authFiles({ HOME })).toEqual(['/flightdeck-test-home/.codex/auth.json']);
+    expect(adapters.gemini.authFiles({ HOME })).toEqual(['/flightdeck-test-home/.gemini/auth.json']);
+    expect(adapters.opencode.authFiles({ HOME })).toEqual(['/flightdeck-test-home/.local/share/opencode/auth.json']);
+  });
 });

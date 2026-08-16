@@ -2,12 +2,14 @@ import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { NotesStore } from '../../src/notes/store.js';
-import { makeRepo, makeFakeHarness } from '../helpers.js';
+import { getDb } from '../../src/core/state.js';
+import { makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
 
 // Names, accounts and paths traced from the reference screenshot. The
 // screenshot is a layout reference, never a data fixture.
@@ -331,6 +333,8 @@ interface LoginHarness {
   errorEl: ShimNode;
   fetchCalls: { url: string; headers: Record<string, string>; status: number }[];
   storage: Map<string, string>;
+  /** The sandbox's live location.href, so URL rewriting is observable. */
+  windowHref(): string;
   getToken(): string;
   /** Functions the served client defines for the login gate. */
   api: {
@@ -467,6 +471,7 @@ function loadLoginClient(
     errorEl,
     fetchCalls,
     storage,
+    windowHref: () => currentHref,
     getToken: () => api.getToken(),
     api,
   };
@@ -489,6 +494,12 @@ describe('Dashboard data integrity (E2E)', () => {
       const mission = notes.createNote('e2e mission', '- implement the login endpoint\n- write the tests');
       const manager = new ArgusManager(fixture.root);
       const argus = manager.start({ name: 'e2e-dashboard', missionNoteId: mission.id, childLimit: 2, pulseSec: 1 });
+      // Dispatch reads worker_harnesses; pin it to the fake claude so no real
+      // opencode process is spawned and then orphaned when the fixture is torn
+      // down.
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET worker_harnesses = ? WHERE id = ?')
+        .run('["claude"]', argus.id);
       await manager.pulse(argus.id);
       const fleet = manager.fleet(argus.id);
       expect(fleet.children.length).toBeGreaterThanOrEqual(1);
@@ -578,6 +589,8 @@ describe('Dashboard login gate (E2E)', () => {
     // The token moved from the fragment into sessionStorage and the fragment
     // was stripped from the URL so it cannot linger in history or a bookmark.
     expect(client.getToken()).toBe('SECRET-TOKEN');
+    expect(client.windowHref()).toBe('http://127.0.0.1:4173/');
+    expect(client.windowHref()).not.toContain('token=');
     expect(client.storage.get(STORAGE_KEY)).toBe('SECRET-TOKEN');
     expect(client.api.eventsUrl()).toBe('/api/events?token=SECRET-TOKEN');
 
@@ -587,6 +600,55 @@ describe('Dashboard login gate (E2E)', () => {
     expect(client.fetchCalls.length).toBeGreaterThan(0);
     expect(client.fetchCalls[0].url).toBe('/api/state');
     expect(client.fetchCalls[0].headers['X-Flightdeck-Token']).toBe('SECRET-TOKEN');
+  });
+
+  it('strips the capability token from the URL fragment after boot', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/#token=SECRET-TOKEN',
+    });
+
+    // The token must not linger in the URL where history, a referrer, or a
+    // bookmark could leak it; sessionStorage is the only place it stays.
+    expect(client.getToken()).toBe('SECRET-TOKEN');
+    expect(client.windowHref()).toBe('http://127.0.0.1:4173/');
+    expect(client.windowHref()).not.toContain('SECRET-TOKEN');
+  });
+
+  it('strips only the token param and preserves the rest of the fragment', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/#theme=dark&token=SECRET-TOKEN&tab=fleet',
+    });
+
+    expect(client.getToken()).toBe('SECRET-TOKEN');
+    expect(client.windowHref()).toBe('http://127.0.0.1:4173/#theme=dark&tab=fleet');
+  });
+
+  it('boots unlocked from a stored token on refresh, with no token in the URL', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      storage: { [STORAGE_KEY]: 'PERSISTED-TOKEN' },
+    });
+
+    expect(client.getToken()).toBe('PERSISTED-TOKEN');
+    expect(client.overlay.classList.contains('hidden')).toBe(true);
+    expect(client.fetchCalls[0].url).toBe('/api/state');
+    expect(client.fetchCalls[0].headers['X-Flightdeck-Token']).toBe('PERSISTED-TOKEN');
+  });
+
+  it('stays locked when the URL token is malformed percent-encoding', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/#token=%ZZ',
+    });
+
+    // decodeURIComponent throws on an invalid escape; the client must fall
+    // back to the locked state rather than crash the boot path.
+    expect(client.getToken()).toBe('');
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+    expect(client.fetchCalls).toHaveLength(0);
   });
 
   it('stays locked and makes no /api call when no token is present', async () => {
@@ -648,6 +710,60 @@ describe('Dashboard login gate (E2E)', () => {
     expect(client.fetchCalls).toHaveLength(0);
     expect(client.errorEl.textContent).toContain('printed by deck ui');
     expect(client.overlay.classList.contains('hidden')).toBe(false);
+  });
+
+  it('shows a login error when the control plane is unreachable', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+    client.tokenInput.value = 'TOKEN';
+    await client.api.submitLogin();
+
+    // The server being down must not reject silently or leave a stored token
+    // behind: the login screen stays up with an actionable error.
+    expect(client.getToken()).toBe('');
+    expect(client.storage.has(STORAGE_KEY)).toBe(false);
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+    expect(client.errorEl.textContent).toContain('Could not reach the control plane');
+    expect(client.errorEl.classList.contains('hidden')).toBe(false);
+  });
+
+  it('stays locked and starts no streams when login validation fails with a server error', async () => {
+    const appJs = readAppJs();
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      fetchImpl: async () => new Response('{"error":"boom"}', { status: 500 }),
+    });
+    client.tokenInput.value = 'TOKEN';
+    await client.api.submitLogin();
+
+    // A 500 is still a rejection: no token is accepted, nothing is stored, and
+    // the dashboard must not start its poll loop or SSE stream.
+    expect(client.getToken()).toBe('');
+    expect(client.storage.has(STORAGE_KEY)).toBe(false);
+    expect(client.overlay.classList.contains('hidden')).toBe(false);
+    expect(client.errorEl.textContent).toContain('rejected');
+    expect(client.api.activeStreams()).toBe(0);
+  });
+
+  it('boots unlocked from a token stored in sessionStorage', async () => {
+    const appJs = readAppJs();
+    // No URL fragment: this is a refresh, not a fresh `deck ui` open. The token
+    // that survived in sessionStorage must unlock the dashboard on its own.
+    const client = loadLoginClient(appJs, {
+      href: 'http://127.0.0.1:4173/',
+      storage: { [STORAGE_KEY]: 'STORED-TOKEN' },
+    });
+
+    expect(client.getToken()).toBe('STORED-TOKEN');
+    expect(client.overlay.classList.contains('hidden')).toBe(true);
+    expect(client.fetchCalls.length).toBeGreaterThan(0);
+    expect(client.fetchCalls[0].url).toBe('/api/state');
+    expect(client.fetchCalls[0].headers['X-Flightdeck-Token']).toBe('STORED-TOKEN');
   });
 
   it('lock clears the token and returns to the login screen', async () => {
@@ -740,5 +856,71 @@ describe('Dashboard login gate (E2E)', () => {
     await client.api.submitLogin('TOKEN');
     await waitFor(() => client.fetchCalls.length >= 4);
     expect(client.api.activeStreams()).toBe(2);
+  });
+});
+
+describe('deck ui login entry (E2E)', () => {
+  /** The CLI coerces `--port 0` to its default 4173, so probe a free port first. */
+  function freePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.on('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const port = (probe.address() as net.AddressInfo).port;
+        probe.close(() => resolve(port));
+      });
+    });
+  }
+
+  it('prints a URL whose capability token unlocks the real server', async () => {
+    const fixture = makeRepo();
+    const port = await freePort();
+    const child = spawnCli(['ui', '--port', String(port), '--no-open', '--project', fixture.root], {
+      cwd: fixture.root,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d) => (stdout += d));
+    child.stderr?.on('data', (d) => (stderr += d));
+    try {
+      // The printed URL carries the session-scoped capability token in the
+      // fragment, exactly the string the user is told to open.
+      let url = '';
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && !url) {
+        const m = /URL:\s+(http:\/\/127\.0\.0\.1:\d+\/#token=[\w-]+)/.exec(stdout);
+        if (m) url = m[1];
+        else await sleep(50);
+      }
+      expect(url, `deck ui stdout: ${stdout} stderr: ${stderr}`).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+\/#token=[\w-]+$/
+      );
+      const token = url.slice(url.indexOf('#token=') + '#token='.length);
+      // url.split('#')[0] ends in '/', so strip it before appending a path.
+      const base = url.split('#')[0].replace(/\/+$/, '');
+
+      // The page itself loads unauthenticated, but the API stays gated behind
+      // the token that was just printed.
+      expect((await fetch(`${base}/`)).status).toBe(200);
+      expect((await fetch(`${base}/api/state`)).status).toBe(401);
+      const ok = await fetch(`${base}/api/state`, {
+        headers: { 'X-Flightdeck-Token': token },
+      });
+      expect(ok.status).toBe(200);
+
+      child.kill('SIGTERM');
+      const code = await new Promise<number | null>((resolve) => {
+        if (child.exitCode !== null) resolve(child.exitCode);
+        else child.on('close', (c) => resolve(c));
+      });
+      expect(code).toBe(0);
+    } finally {
+      // Never leak the spawned control plane. A failed assertion above must
+      // not leave a `deck ui` process holding the port for a later run; the
+      // graceful-SIGTERM path was already asserted, so a hard kill here is
+      // cleanup only.
+      if (child.exitCode === null && !child.killed) child.kill('SIGKILL');
+      fixture.cleanup();
+    }
   });
 });

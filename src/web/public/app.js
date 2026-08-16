@@ -290,7 +290,13 @@ async function submitLogin(token) {
     showLoginError('Enter the capability token printed by deck ui.');
     return;
   }
-  const res = await fetch('/api/state', { headers: { 'X-Flightdeck-Token': value } });
+  let res;
+  try {
+    res = await fetch('/api/state', { headers: { 'X-Flightdeck-Token': value } });
+  } catch {
+    showLoginError('Could not reach the control plane. Is deck ui still running?');
+    return;
+  }
   if (!res.ok) {
     capabilityToken = '';
     clearStoredToken();

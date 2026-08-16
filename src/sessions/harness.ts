@@ -146,7 +146,8 @@ const claude: HarnessAdapter = {
   },
   loginArgs: () => ['login'],
   authFiles(env) {
-    const dir = env?.CLAUDE_CONFIG_DIR ?? loadConfig().profileDir.claude ?? path.join(os.homedir(), '.claude');
+    const dir =
+      env?.CLAUDE_CONFIG_DIR ?? loadConfig().profileDir.claude ?? path.join(env?.HOME ?? os.homedir(), '.claude');
     return [path.join(dir, '.credentials.json')];
   },
 };
@@ -184,7 +185,7 @@ const codex: HarnessAdapter = {
   },
   loginArgs: () => ['login'],
   authFiles(env) {
-    const dir = env?.CODEX_HOME ?? loadConfig().profileDir.codex ?? path.join(os.homedir(), '.codex');
+    const dir = env?.CODEX_HOME ?? loadConfig().profileDir.codex ?? path.join(env?.HOME ?? os.homedir(), '.codex');
     return [path.join(dir, 'auth.json')];
   },
 };
@@ -235,7 +236,7 @@ const opencode: HarnessAdapter = {
   authFiles(env) {
     const profileDir = loadConfig().profileDir.opencode;
     if (profileDir) return [path.join(profileDir, 'opencode', 'auth.json')];
-    const base = env?.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share');
+    const base = env?.XDG_DATA_HOME ?? path.join(env?.HOME ?? os.homedir(), '.local', 'share');
     return [path.join(base, 'opencode', 'auth.json')];
   },
 };
@@ -280,7 +281,7 @@ const gemini: HarnessAdapter = {
       env?.GEMINI_CONFIG_DIR ??
       env?.GEMINI_HOME ??
       loadConfig().profileDir.gemini ??
-      path.join(os.homedir(), '.gemini');
+      path.join(env?.HOME ?? os.homedir(), '.gemini');
     return [path.join(dir, 'auth.json')];
   },
 };
