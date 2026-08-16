@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawnSync } from 'node:child_process';
-import { projectRootOf, printJson, handleError } from '../util.js';
+import { projectRootOf, printJson, handleError, promptConfirm } from '../util.js';
 import { parsePlaybookYaml } from '../../playbooks/parser.js';
 import type { Playbook } from '../../playbooks/types.js';
 import { PlaybookEngine, type EngineServices } from '../../playbooks/engine.js';
@@ -20,16 +20,6 @@ import { getAdapter } from '../../sessions/harness.js';
 import { BUILTIN_PLAYBOOKS } from '../../playbooks/templates.js';
 
 type Opts = Record<string, string | boolean | undefined>;
-
-function promptConfirm(prompt: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-    rl.question(`${prompt} [y/N] `, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase().startsWith('y'));
-    });
-  });
-}
 
 function buildEngine(projectRoot: string): { engine: PlaybookEngine; registry: ToolRegistry } {
   const ctx: McpContext = {

@@ -10,7 +10,7 @@ import { TaskBoard } from '../../argus/board.js';
 import { budgetState } from '../../argus/budget.js';
 import { TablesStore } from '../../tables/store.js';
 import { reduceConsoleState, type ConsoleBounds, type ConsoleEffect, type FleetConsoleState } from '../../fleet/console-state.js';
-import { projectRootOf, handleError, printJson } from '../util.js';
+import { projectRootOf, handleError, printJson, promptConfirm } from '../util.js';
 import type { Task } from '../../core/types.js';
 
 export interface ConsoleSnapshot {
@@ -460,10 +460,15 @@ export function registerFleet(program: Command): void {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
         if (!opts.yes) {
-          // In a non-interactive process there is no terminal to confirm on,
-          // so the destructive action refuses without an explicit --yes.
           if (!process.stdin.isTTY) {
             throw new Error('refusing to kill without --yes in a non-interactive process');
+          }
+          const ok = await promptConfirm(
+            `Kill ${sessionId} and block its active task? The worktree is preserved.`
+          );
+          if (!ok) {
+            console.log('cancelled');
+            return;
           }
         }
         const result = await new FleetActions(projectRoot).kill(sessionId);
