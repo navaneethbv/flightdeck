@@ -18,6 +18,14 @@ export function getDb(projectRoot: string): DatabaseSync {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
+  // WAL mode lets readers and writers proceed without blocking each other,
+  // but a second writer still hits SQLITE_BUSY immediately if it collides
+  // with an in-progress write, absent a busy timeout. Multiple real
+  // processes (the manager, worker sessions, brain invocations) each open
+  // their own connection to this same file and write concurrently, so
+  // without this a colliding writer throws "database is locked" instead of
+  // waiting a few milliseconds for the other transaction to commit.
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA foreign_keys = ON;');
   migrate(db);
   dbCache.set(real, db);

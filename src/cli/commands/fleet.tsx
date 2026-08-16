@@ -407,7 +407,15 @@ export function registerFleet(program: Command): void {
     .action((opts: Record<string, string | boolean>) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        render(<FleetConsole projectRoot={projectRoot} />, { exitOnCtrlC: true });
+        // Ink auto-detects "interactive" from `!isInCi && stdout.isTTY`. This
+        // console always runs inside a real tmux pane pty, but a tmux pane
+        // spawned from inside a CI job inherits CI=true from its environment,
+        // which would otherwise flip Ink into non-interactive mode. There, Ink
+        // writes only the final frame at unmount, and this console never
+        // unmounts during normal operation, so it would render nothing at all
+        // for as long as it runs. Force interactive mode since the real signal
+        // that matters, a genuine pty, already holds.
+        render(<FleetConsole projectRoot={projectRoot} />, { exitOnCtrlC: true, interactive: true });
       } catch (err) {
         handleError(err);
       }
