@@ -9,14 +9,56 @@ import { makeRepo } from '../helpers.js';
 /** A brain that returns canned JSON, so no model is ever invoked. */
 function fakeBrain(responses: Record<string, string>) {
   const calls: string[] = [];
-  const fn = async (_root: string, _argusId: string, opts: { label: string }): Promise<string> => {
+  const prompts: Record<string, string> = {};
+  const fn = async (_root: string, _argusId: string, opts: { label: string; prompt?: string }): Promise<string> => {
     calls.push(opts.label);
+    if (opts.prompt !== undefined) prompts[opts.label] = opts.prompt;
     return responses[opts.label] ?? '{}';
   };
-  return { fn, calls };
+  return { fn, calls, prompts };
 }
 
 describe('orchestration', () => {
+  it('includes the project conventions note in plan and answer prompts', async () => {
+    const fixture = makeRepo();
+    try {
+      const brain = fakeBrain({
+        plan: '{"tasks":[{"title":"a","spec":"do a","depends_on":[]}]}',
+        answer: '{"answer":"Run npm test","faq_key":"test-command"}',
+      });
+      const manager = new ArgusManager(fixture.root, brain.fn);
+      const notes = new NotesStore(fixture.root);
+      const mission = notes.createNote('mission', '- build the thing');
+      const conventions = notes.createNote('conventions', 'Use strict ESM and run npm test.');
+      const argus = manager.start({
+        name: 'fleet',
+        missionNoteId: mission.id,
+        conventionsNoteId: conventions.id,
+      });
+
+      await manager.plan(argus.id);
+      const queue = new QuestionQueue(fixture.root);
+      queue.ask(argus.id, 'worker-1', 'How do I verify?');
+      await manager.answerQuestions(argus.id);
+
+      expect(brain.prompts.plan).toContain('Project conventions:\nUse strict ESM and run npm test.');
+      expect(brain.prompts.answer).toContain('Project conventions:\nUse strict ESM and run npm test.');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects a conventions note id that does not exist', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      expect(() => manager.start({ conventionsNoteId: 'nope' })).toThrow(/conventions note "nope" not found/);
+      expect(manager.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('turns a plan into board rows', async () => {
     const fixture = makeRepo();
     try {

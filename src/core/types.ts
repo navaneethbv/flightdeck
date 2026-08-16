@@ -116,6 +116,7 @@ export interface Argus {
   maxAttemptsPerTask: number;
   maxTasks: number;
   questionTimeoutSec: number;
+  conventionsNoteId: string | null;
 }
 
 export type IntegrationKind = 'jira' | 'github' | 'slack';

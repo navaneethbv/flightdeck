@@ -30,6 +30,7 @@ export interface StartArgusOptions {
   maxAttemptsPerTask?: number;
   maxTasks?: number;
   questionTimeoutSec?: number;
+  conventionsNoteId?: string;
 }
 
 function validateStartOptions(opts: StartArgusOptions): void {
@@ -100,6 +101,7 @@ function rowToArgus(row: Record<string, unknown>): Argus {
     maxAttemptsPerTask: Number(row.max_attempts_per_task),
     maxTasks: Number(row.max_tasks),
     questionTimeoutSec: Number(row.question_timeout_sec),
+    conventionsNoteId: typeof row.conventions_note_id === 'string' ? row.conventions_note_id : null,
   };
 }
 
@@ -161,6 +163,9 @@ export class ArgusManager {
 
   start(opts: StartArgusOptions = {}): Argus {
     validateStartOptions(opts);
+    if (opts.conventionsNoteId && !this.notes.readNote(opts.conventionsNoteId)) {
+      throw new Error(`conventions note "${opts.conventionsNoteId}" not found`);
+    }
     this.ensureProgressTable();
     const id = crypto.randomUUID();
     const cap = randomToken();
@@ -195,6 +200,7 @@ export class ArgusManager {
       maxAttemptsPerTask: opts.maxAttemptsPerTask ?? 3,
       maxTasks: opts.maxTasks ?? 100,
       questionTimeoutSec: opts.questionTimeoutSec ?? 120,
+      conventionsNoteId: opts.conventionsNoteId ?? null,
     };
     if (![2, 4, 8, 16].includes(argus.childLimit)) {
       throw new Error(`child limit must be one of 2, 4, 8, 16 (got ${argus.childLimit})`);
@@ -206,8 +212,8 @@ export class ArgusManager {
           status, manager_session_id, created_at, last_pulse_at,
           brain_harness, brain_plan_model, brain_review_model, worker_harnesses,
           budget_window_sec, budget_max_tokens, budget_count_cache_reads,
-          max_attempts_per_task, max_tasks, question_timeout_sec
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          max_attempts_per_task, max_tasks, question_timeout_sec, conventions_note_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         argus.id,
@@ -231,7 +237,8 @@ export class ArgusManager {
         argus.budgetCountCacheReads ? 1 : 0,
         argus.maxAttemptsPerTask,
         argus.maxTasks,
-        argus.questionTimeoutSec
+        argus.questionTimeoutSec,
+        argus.conventionsNoteId
       );
     this.writeProgress(argus.id, null, 'argus_created', `child_limit=${argus.childLimit} pulse=${argus.pulseSec}s`);
     return this.get(id)!;
@@ -304,7 +311,7 @@ export class ArgusManager {
   async plan(id: string): Promise<void> {
     const argus = this.get(id);
     if (!argus) throw new Error(`argus "${id}" not found`);
-    const mission = argus.missionNoteId ? this.notes.readNote(argus.missionNoteId) : null;
+    const { mission, conventions } = this.contextFor(argus);
     if (!mission) throw new Error(`argus "${id}" has no readable mission note`);
 
     const existing = this.board.list(id);
@@ -318,8 +325,9 @@ export class ArgusManager {
       'Break the mission below into independent tasks that separate agents can work on in isolated git worktrees.',
       '',
       'Mission:',
-      mission.body,
+      mission,
       '',
+      conventions ? `Project conventions:\n${conventions}\n` : '',
       existing.length > 0 ? `Tasks already on the board (do not repeat them):\n${existingList}` : '',
       '',
       'Reply with JSON only, in exactly this shape:',
@@ -443,8 +451,8 @@ export class ArgusManager {
   async answerQuestions(id: string): Promise<void> {
     const budget = budgetState(this.projectRoot, id);
     if (!budget.questionsAllowed) return;
-    const mission = this.get(id)?.missionNoteId;
-    const missionBody = mission ? this.notes.readNote(mission)?.body ?? '' : '';
+    const argus = this.get(id);
+    const { mission, conventions } = argus ? this.contextFor(argus) : { mission: '', conventions: '' };
     const row = this.db
       .prepare('SELECT brain_review_model FROM argus WHERE id = ?')
       .get(id) as { brain_review_model?: string };
@@ -453,7 +461,8 @@ export class ArgusManager {
       const prompt = [
         'A coding agent in your fleet has a question. Answer it concisely and concretely.',
         '',
-        missionBody ? `Mission context:\n${missionBody}\n` : '',
+        mission ? `Mission context:\n${mission}\n` : '',
+        conventions ? `Project conventions:\n${conventions}\n` : '',
         `Question: ${question.question}`,
         '',
         'Reply with JSON only:',
@@ -493,6 +502,14 @@ export class ArgusManager {
     }
 
     this.db.prepare('UPDATE argus SET last_pulse_at = ? WHERE id = ?').run(now(), id);
+  }
+
+  private contextFor(argus: Argus): { mission: string; conventions: string } {
+    const mission = argus.missionNoteId ? this.notes.readNote(argus.missionNoteId)?.body ?? '' : '';
+    const conventions = argus.conventionsNoteId
+      ? this.notes.readNote(argus.conventionsNoteId)?.body ?? ''
+      : '';
+    return { mission, conventions };
   }
 
   /** Assigns dispatchable tasks to fresh worker sessions, up to the child limit. */

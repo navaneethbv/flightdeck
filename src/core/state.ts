@@ -103,7 +103,8 @@ function migrate(db: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'stopped',
       manager_session_id TEXT,
       created_at INTEGER NOT NULL,
-      last_pulse_at INTEGER
+      last_pulse_at INTEGER,
+      conventions_note_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS integration_cache (
@@ -189,6 +190,7 @@ function migrate(db: DatabaseSync): void {
     'max_attempts_per_task INTEGER NOT NULL DEFAULT 3',
     'max_tasks INTEGER NOT NULL DEFAULT 100',
     'question_timeout_sec INTEGER NOT NULL DEFAULT 120',
+    'conventions_note_id TEXT',
   ];
   for (const col of argusColumns) {
     try {

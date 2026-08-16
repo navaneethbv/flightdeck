@@ -104,6 +104,7 @@ export function registerArgus(program: Command): void {
     .option('--max-attempts <count>', 'attempt limit per task')
     .option('--max-tasks <count>', 'task count ceiling for the mission')
     .option('--question-timeout <duration>', 'worker question timeout')
+    .option('--conventions <note-id>', 'project conventions note id')
     .option('--project <path>', 'project root (default: current directory)')
     .option('--json', 'emit machine-readable output')
     .action(async (opts: Opts) => {
@@ -135,6 +136,7 @@ export function registerArgus(program: Command): void {
           maxAttemptsPerTask: opts.maxAttempts !== undefined ? positiveInteger(String(opts.maxAttempts), 'maximum attempts') : undefined,
           maxTasks: opts.maxTasks !== undefined ? positiveInteger(String(opts.maxTasks), 'maximum tasks') : undefined,
           questionTimeoutSec: opts.questionTimeout !== undefined ? parseSeconds(String(opts.questionTimeout)) : undefined,
+          conventionsNoteId: opts.conventions !== undefined ? String(opts.conventions) : undefined,
         });
         if (opts.json) printJson({ argus, message: 'running in foreground; press Ctrl+C to stop' });
         else process.stdout.write(`argus ${argus.name} (${argus.id}) running; mission note ${missionNoteId}\n`);

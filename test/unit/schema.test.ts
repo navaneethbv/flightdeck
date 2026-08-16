@@ -60,6 +60,16 @@ describe('orchestrator schema', () => {
     }
   });
 
+  it('stores the optional conventions note id on an argus row', () => {
+    const fixture = makeRepo();
+    try {
+      const cols = columns(getDb(fixture.root), 'argus');
+      expect(cols).toContain('conventions_note_id');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('defaults the gate commands', () => {
     const config = loadConfig();
     expect(config.argus.gateTestCommand).toBe('npm test');
