@@ -58,6 +58,20 @@ function setFocusIndex(state: FleetConsoleState, index: number): FleetConsoleSta
     : { ...state, taskIndex: index };
 }
 
+function handleConfirm(clamped: FleetConsoleState, bounds: ConsoleBounds): ConsoleTransition {
+  const pending = clamped.pendingAction;
+  if (pending?.kind === 'kill') {
+    return { state: { ...clamped, pendingAction: null }, effect: { kind: 'kill', sessionId: pending.sessionId } };
+  }
+  if (pending?.kind === 'reject' && clamped.rejectReason.trim() !== '' && bounds.argusId) {
+    return {
+      state: { ...clamped, pendingAction: null, rejectReason: '' },
+      effect: { kind: 'reject', taskId: pending.taskId, argusId: bounds.argusId, reason: clamped.rejectReason.trim() },
+    };
+  }
+  return { state: clamped, effect: null };
+}
+
 /**
  * Pure selection, focus, and confirmation reducer for the Fleet console. It
  * never calls services, exits the process, or reads SQLite: it only maps
@@ -93,24 +107,52 @@ export function reduceConsoleState(
     case 'text':
       if (clamped.pendingAction?.kind !== 'reject') return { state: clamped, effect: null };
       return { state: { ...clamped, rejectReason: clamped.rejectReason + event.value }, effect: null };
-    case 'confirm': {
-      const pending = clamped.pendingAction;
-      if (pending?.kind === 'kill') {
-        return { state: { ...clamped, pendingAction: null }, effect: { kind: 'kill', sessionId: pending.sessionId } };
-      }
-      if (pending?.kind === 'reject' && clamped.rejectReason.trim() !== '' && bounds.argusId) {
-        return {
-          state: { ...clamped, pendingAction: null, rejectReason: '' },
-          effect: { kind: 'reject', taskId: pending.taskId, argusId: bounds.argusId, reason: clamped.rejectReason.trim() },
-        };
-      }
-      return { state: clamped, effect: null };
-    }
+    case 'confirm':
+      return handleConfirm(clamped, bounds);
     case 'cancel':
       if (clamped.pendingAction) return { state: { ...clamped, pendingAction: null, rejectReason: '' }, effect: null };
       return { state: clamped, effect: null };
     case 'action':
       return reduceKey(clamped, event.key, bounds);
+  }
+}
+
+function reduceWorkerKey(
+  state: FleetConsoleState,
+  key: 'c' | 'r' | 'R' | 'k',
+  workerId: string | null
+): ConsoleTransition {
+  if (!workerId) return { state, effect: null };
+  switch (key) {
+    case 'c':
+      return { state, effect: { kind: 'claim', sessionId: workerId } };
+    case 'r':
+      return { state, effect: { kind: 'release', sessionId: workerId, resume: false } };
+    case 'R':
+      return { state, effect: { kind: 'release', sessionId: workerId, resume: true } };
+    case 'k':
+      return { state: { ...state, pendingAction: { kind: 'kill', sessionId: workerId } }, effect: null };
+  }
+}
+
+function reduceTaskKey(
+  state: FleetConsoleState,
+  key: 'a' | 'x' | 'u' | 'p',
+  taskId: string | null,
+  argusId: string | null
+): ConsoleTransition {
+  if (!taskId) return { state, effect: null };
+  if (key === 'x') {
+    return { state: { ...state, pendingAction: { kind: 'reject', taskId } }, effect: null };
+  }
+  if (!argusId) return { state, effect: null };
+  switch (key) {
+    case 'a':
+      return { state, effect: { kind: 'accept', taskId, argusId } };
+    case 'u':
+      return { state, effect: { kind: 'unblock', taskId, argusId } };
+    case 'p':
+      return { state, effect: { kind: 'prioritize', taskId, argusId } };
   }
 }
 
@@ -122,59 +164,33 @@ function reduceKey(
   const workerId = bounds.workerIds[state.workerIndex] ?? null;
   const taskId = bounds.taskIds[state.taskIndex] ?? null;
 
-  switch (key) {
-    case 'c':
-      return workerId
-        ? { state, effect: { kind: 'claim', sessionId: workerId } }
-        : { state, effect: null };
-    case 'r':
-      return workerId
-        ? { state, effect: { kind: 'release', sessionId: workerId, resume: false } }
-        : { state, effect: null };
-    case 'R':
-      return workerId
-        ? { state, effect: { kind: 'release', sessionId: workerId, resume: true } }
-        : { state, effect: null };
-    case 'k':
-      return workerId
-        ? { state: { ...state, pendingAction: { kind: 'kill', sessionId: workerId } }, effect: null }
-        : { state, effect: null };
-    case 'y':
-      if (state.pendingAction?.kind === 'kill') {
-        return {
-          state: { ...state, pendingAction: null },
-          effect: { kind: 'kill', sessionId: state.pendingAction.sessionId },
-        };
-      }
-      return { state, effect: null };
-    case 'n':
-      if (state.pendingAction) {
-        return { state: { ...state, pendingAction: null, rejectReason: '' }, effect: null };
-      }
-      return bounds.argusId
-        ? { state, effect: { kind: 'spawn', argusId: bounds.argusId } }
-        : { state, effect: null };
-    case 'a':
-      return taskId && bounds.argusId
-        ? { state, effect: { kind: 'accept', taskId, argusId: bounds.argusId } }
-        : { state, effect: null };
-    case 'x':
-      return taskId
-        ? { state: { ...state, pendingAction: { kind: 'reject', taskId } }, effect: null }
-        : { state, effect: null };
-    case 'u':
-      return taskId && bounds.argusId
-        ? { state, effect: { kind: 'unblock', taskId, argusId: bounds.argusId } }
-        : { state, effect: null };
-    case 'p':
-      return taskId && bounds.argusId
-        ? { state, effect: { kind: 'prioritize', taskId, argusId: bounds.argusId } }
-        : { state, effect: null };
-    case 'f':
-      return bounds.argusId
-        ? { state, effect: { kind: 'force-review', argusId: bounds.argusId } }
-        : { state, effect: null };
-    default:
-      return { state, effect: null };
+  if (key === 'c' || key === 'r' || key === 'R' || key === 'k') {
+    return reduceWorkerKey(state, key, workerId);
   }
+  if (key === 'a' || key === 'x' || key === 'u' || key === 'p') {
+    return reduceTaskKey(state, key, taskId, bounds.argusId);
+  }
+  if (key === 'y') {
+    if (state.pendingAction?.kind === 'kill') {
+      return {
+        state: { ...state, pendingAction: null },
+        effect: { kind: 'kill', sessionId: state.pendingAction.sessionId },
+      };
+    }
+    return { state, effect: null };
+  }
+  if (key === 'n') {
+    if (state.pendingAction) {
+      return { state: { ...state, pendingAction: null, rejectReason: '' }, effect: null };
+    }
+    return bounds.argusId
+      ? { state, effect: { kind: 'spawn', argusId: bounds.argusId } }
+      : { state, effect: null };
+  }
+  if (key === 'f') {
+    return bounds.argusId
+      ? { state, effect: { kind: 'force-review', argusId: bounds.argusId } }
+      : { state, effect: null };
+  }
+  return { state, effect: null };
 }

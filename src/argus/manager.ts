@@ -373,9 +373,9 @@ export class ArgusManager {
       const retried = await this.brain(this.projectRoot, id, { ...opts, prompt: retryPrompt });
       try {
         return parse(retried);
-      } catch (second) {
-        this.writeProgress(id, null, 'brain_abandoned', (second as Error).message);
-        throw new BrainContractError(opts.label, (second as Error).message);
+      } catch (error_) {
+        this.writeProgress(id, null, 'brain_abandoned', (error_ as Error).message);
+        throw new BrainContractError(opts.label, (error_ as Error).message);
       }
     }
   }
@@ -486,7 +486,7 @@ export class ArgusManager {
     const maxAttempts = this.maxAttemptsFor(id);
     for (const task of this.board.list(id, 'assigned')) {
       const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
-      if (!session || session.startedAt === null || (session.status !== 'stopped' && session.status !== 'failed')) {
+      if (session?.startedAt === null || (session?.status !== 'stopped' && session?.status !== 'failed')) {
         continue;
       }
       this.board.toRevising(task.id, 'worker exited before report_done');
@@ -677,8 +677,7 @@ export class ArgusManager {
         const head = [`File: ${file.path}`];
         if (file.error) head.push(`Error: ${file.error}`);
         else if (file.content !== null) {
-          head.push(file.truncated ? 'Content (truncated):' : 'Content:');
-          head.push(file.content);
+          head.push(file.truncated ? 'Content (truncated):' : 'Content:', file.content);
         }
         return head.join('\n');
       })
@@ -785,7 +784,7 @@ export class ArgusManager {
       await this.plan(id);
     }
 
-    await this.recoverOrphans(id);
+    this.recoverOrphans(id);
     await this.resumeRevisions(id);
     await this.dispatch(id);
     await this.runGatesForReported(id);

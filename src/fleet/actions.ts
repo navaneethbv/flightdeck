@@ -89,8 +89,8 @@ export class FleetActions {
    * stopped without touching the board.
    */
   async kill(sessionId: string): Promise<FleetActionResult> {
-    const sessions = this.fleet.fleetSessions().find((s) => s.id === sessionId);
-    if (!sessions) throw new Error(`session "${sessionId}" not found`);
+    const exists = this.fleet.fleetSessions().some((s) => s.id === sessionId);
+    if (!exists) throw new Error(`session "${sessionId}" not found`);
     const activeTask = this.board.listByAssignee(sessionId).find(
       (t) => t.status === 'assigned' || t.status === 'revising' || t.status === 'reported'
     );

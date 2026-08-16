@@ -26,8 +26,23 @@ function readTokenFromUrl() {
 /** Drop the token fragment so it does not linger in history, referrers, or a bookmark. */
 function stripTokenFromUrl() {
   try {
-    const url = window.location.href.replace(/[#&]token=[^&#]*/, '').replace(/[#&]+$/, '');
-    window.history.replaceState(null, '', url || '/');
+    const raw = window.location.href;
+    const tokenIndex = raw.indexOf('token=');
+    if (tokenIndex === -1) return;
+    const beforeToken = raw.slice(0, tokenIndex);
+    const afterToken = raw.slice(tokenIndex + 6);
+    const nextSep = afterToken.search(/[&#]/);
+    const rest = nextSep === -1 ? '' : afterToken.slice(nextSep + 1);
+
+    let clean = '';
+    const lastChar = beforeToken.slice(-1);
+    if (lastChar === '#' || lastChar === '&' || lastChar === '?') {
+      const prefix = beforeToken.slice(0, -1);
+      clean = rest ? `${prefix}${lastChar}${rest}` : prefix;
+    } else {
+      clean = rest ? `${beforeToken}${rest}` : beforeToken;
+    }
+    window.history.replaceState(null, '', clean || '/');
   } catch {
     // A non-browser context (tests) has no history to rewrite.
   }
@@ -475,6 +490,54 @@ function renderLaws(fleet) {
   `;
 }
 
+function createSessionCard(s, hung) {
+  const card = document.createElement('div');
+  card.className = 'session-card';
+  card.dataset.id = s.id;
+
+  const status = hung.has(s.id) ? 'Hung' : s.status;
+  const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
+  const claimed = s.claimedAt !== null && s.claimedAt !== undefined;
+  const telemetry = s.telemetry ?? {};
+  const model = text(telemetry.model);
+  // A claimed session reports no usage from its headless run, so its spend
+  // renders as the inert dash rather than a stale or fabricated number.
+  const spend = claimed ? NO_VALUE : formatSpend(telemetry.costUsd);
+  const progress = formatProgress(telemetry.progress);
+  const telemetryNote =
+    model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
+      ? 'Model, spend, and progress were not reported.'
+      : 'Model, spend, and progress as reported by the harness.';
+  const claimBadge = claimed
+    ? '<span class="session-claim-badge" title="A human has taken over this worker">CLAIMED</span>'
+    : '';
+
+  card.innerHTML = `
+    <div class="session-card-header">
+      <div class="session-card-name-row">
+        <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
+        <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        ${claimBadge}
+      </div>
+      <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
+    </div>
+    <div class="session-card-meta">
+      <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
+        <span class="status-dot">●</span> ${escapeHtml(status)}
+      </span>
+      <span class="session-model-badge" title="${escapeHtml(telemetryNote)}">
+        ${escapeHtml(model)} · ${escapeHtml(spend)}
+      </span>
+    </div>
+    <div class="session-card-footer text-dim">
+      ${escapeHtml(where)} · ${escapeHtml(relativeTime(s.lastActivityAt))}
+    </div>
+  `;
+
+  card.addEventListener('click', () => openLogsModal(s.id, s.name));
+  return card;
+}
+
 /**
  * One card per real session. Model, spend, and progress come from
  * session_telemetry; whatever the harness did not report renders as a dash.
@@ -496,51 +559,7 @@ function renderFleet() {
 
   container.innerHTML = '';
   for (const s of sessions) {
-    const card = document.createElement('div');
-    card.className = 'session-card';
-    card.dataset.id = s.id;
-
-    const status = hung.has(s.id) ? 'Hung' : s.status;
-    const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
-    const claimed = s.claimedAt !== null && s.claimedAt !== undefined;
-    const telemetry = s.telemetry ?? {};
-    const model = text(telemetry.model);
-    // A claimed session reports no usage from its headless run, so its spend
-    // renders as the inert dash rather than a stale or fabricated number.
-    const spend = claimed ? NO_VALUE : formatSpend(telemetry.costUsd);
-    const progress = formatProgress(telemetry.progress);
-    const telemetryNote =
-      model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
-        ? 'Model, spend, and progress were not reported.'
-        : 'Model, spend, and progress as reported by the harness.';
-    const claimBadge = claimed
-      ? '<span class="session-claim-badge" title="A human has taken over this worker">CLAIMED</span>'
-      : '';
-
-    card.innerHTML = `
-      <div class="session-card-header">
-        <div class="session-card-name-row">
-          <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
-          <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
-          ${claimBadge}
-        </div>
-        <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
-      </div>
-      <div class="session-card-meta">
-        <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
-          <span class="status-dot">●</span> ${escapeHtml(status)}
-        </span>
-        <span class="session-model-badge" title="${escapeHtml(telemetryNote)}">
-          ${escapeHtml(model)} · ${escapeHtml(spend)}
-        </span>
-      </div>
-      <div class="session-card-footer text-dim">
-        ${escapeHtml(where)} · ${escapeHtml(relativeTime(s.lastActivityAt))}
-      </div>
-    `;
-
-    card.addEventListener('click', () => openLogsModal(s.id, s.name));
-    container.appendChild(card);
+    container.appendChild(createSessionCard(s, hung));
   }
 }
 

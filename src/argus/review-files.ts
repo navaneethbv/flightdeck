@@ -30,6 +30,49 @@ function isWithin(root: string, candidate: string): boolean {
   return candidate.startsWith(`${root}${path.sep}`) || candidate === root;
 }
 
+function resolveReviewPath(realRoot: string, request: string): { realPath?: string; error?: string } {
+  // Resolve against the real worktree root so the traversal check is not
+  // defeated by a parent path being a symlink (for example /tmp on macOS).
+  const candidate = path.resolve(realRoot, request);
+  const relative = path.relative(realRoot, candidate);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return { error: `path "${request}" is outside the worker worktree` };
+  }
+  if (denied(relative)) {
+    return { error: `path "${request}" is a generated config, state, or environment file` };
+  }
+
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(candidate);
+  } catch {
+    return { error: `path "${request}" does not exist` };
+  }
+  if (!isWithin(realRoot, realPath)) {
+    return { error: `path "${request}" resolves outside the worker worktree` };
+  }
+
+  return { realPath };
+}
+
+function readReviewFile(realPath: string, request: string): { content?: string; error?: string } {
+  try {
+    const stat = fs.statSync(realPath);
+    if (!stat.isFile()) {
+      return { error: `path "${request}" is not a regular file` };
+    }
+  } catch {
+    return { error: `path "${request}" cannot be read` };
+  }
+
+  try {
+    const content = fs.readFileSync(realPath, 'utf8');
+    return { content };
+  } catch {
+    return { error: `path "${request}" cannot be read` };
+  }
+}
+
 /**
  * Loads the brain-requested files from one worker worktree, bounded and
  * path-safe. Each request is resolved against the worktree root, both the
@@ -52,58 +95,21 @@ export function loadReviewFiles(worktree: string, requestedPaths: string[]): Rev
       truncated: false,
     };
 
-    // Resolve against the real worktree root so the traversal check is not
-    // defeated by a parent path being a symlink (for example /tmp on macOS).
-    const candidate = path.resolve(realRoot, request);
-    const relative = path.relative(realRoot, candidate);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      result.error = `path "${request}" is outside the worker worktree`;
-      files.push(result);
-      continue;
-    }
-    if (denied(relative)) {
-      result.error = `path "${request}" is a generated config, state, or environment file`;
+    const resolved = resolveReviewPath(realRoot, request);
+    if (resolved.error || !resolved.realPath) {
+      result.error = resolved.error ?? `path "${request}" cannot be resolved`;
       files.push(result);
       continue;
     }
 
-    let realPath: string;
-    try {
-      realPath = fs.realpathSync(candidate);
-    } catch {
-      result.error = `path "${request}" does not exist`;
-      files.push(result);
-      continue;
-    }
-    if (!isWithin(realRoot, realPath)) {
-      result.error = `path "${request}" resolves outside the worker worktree`;
+    const read = readReviewFile(resolved.realPath, request);
+    if (read.error || read.content === undefined) {
+      result.error = read.error ?? `path "${request}" cannot be read`;
       files.push(result);
       continue;
     }
 
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(realPath);
-    } catch {
-      result.error = `path "${request}" cannot be read`;
-      files.push(result);
-      continue;
-    }
-    if (!stat.isFile()) {
-      result.error = `path "${request}" is not a regular file`;
-      files.push(result);
-      continue;
-    }
-
-    let content: string;
-    try {
-      content = fs.readFileSync(realPath, 'utf8');
-    } catch {
-      result.error = `path "${request}" cannot be read`;
-      files.push(result);
-      continue;
-    }
-
+    let content = read.content;
     if (content.length > MAX_FILE_BYTES) {
       content = content.slice(0, MAX_FILE_BYTES);
       result.truncated = true;

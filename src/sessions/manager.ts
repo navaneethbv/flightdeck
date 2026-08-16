@@ -49,7 +49,7 @@ function assertHarnessSpawnAllowed(binary: string): void {
   if (process.env.FLIGHTDECK_FORBID_REAL_HARNESS !== '1') return;
   let resolved: string;
   try {
-    resolved = execFileSync('which', [binary], { encoding: 'utf8' }).trim();
+    resolved = execFileSync('which', [binary], { encoding: 'utf8' }).trim(); // NOSONAR: S4036
   } catch {
     return; // not resolvable at all; the spawn will fail on its own
   }

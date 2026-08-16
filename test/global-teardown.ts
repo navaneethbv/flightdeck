@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 function reap(): void {
   for (const pattern of ['flightdeck-repo-', 'flightdeck-bin-', 'flightdeck-test-home-']) {
     try {
-      execFileSync('pkill', ['-f', pattern], { stdio: 'ignore' });
+      execFileSync('pkill', ['-f', pattern], { stdio: 'ignore' }); // NOSONAR: S4036
     } catch {
       // pkill exits non-zero when nothing matched, which is the good case.
     }

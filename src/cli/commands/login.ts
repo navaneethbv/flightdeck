@@ -41,6 +41,40 @@ function runLoginFlow(kind: HarnessKind, inherit: boolean): { ok: boolean; exitC
   return { ok: result.status === 0, exitCode: result.status ?? null };
 }
 
+function resolveLoginTargets(harnesses: string[]): HarnessKind[] {
+  if (harnesses.length === 0) {
+    return HARNESSES.filter(isInstalled);
+  }
+  for (const h of harnesses) {
+    if (!isHarnessKind(h)) throw new Error(`unknown harness "${h}"`);
+  }
+  return harnesses as HarnessKind[];
+}
+
+function evaluateHarnessTarget(kind: HarnessKind, check: boolean, isJson: boolean): LoginReport {
+  if (check) {
+    const installed = isInstalled(kind);
+    const authenticated = installed && hasCredentials(kind);
+    return { kind, installed, action: 'check', ok: authenticated, exitCode: null, authenticated };
+  }
+  if (!isInstalled(kind)) {
+    return { kind, installed: false, action: 'login', ok: false, exitCode: null };
+  }
+  const { ok, exitCode } = runLoginFlow(kind, !isJson);
+  return { kind, installed: true, action: 'login', ok, exitCode };
+}
+
+function formatLoginReport(r: LoginReport): string {
+  if (!r.installed) {
+    return `FAIL  ${r.kind.padEnd(8)} not installed\n`;
+  }
+  if (r.action === 'check') {
+    return `${r.ok ? 'ok  ' : 'FAIL'}  ${r.kind.padEnd(8)} ${r.authenticated ? 'authenticated' : 'not authenticated'}\n`;
+  }
+  const suffix = r.ok ? '' : ` (exit ${r.exitCode ?? '?'})`;
+  return `${r.ok ? 'ok  ' : 'FAIL'}  ${r.kind.padEnd(8)} login ${r.ok ? 'ok' : 'failed'}${suffix}\n`;
+}
+
 export function registerLogin(program: Command): void {
   program
     .command('login')
@@ -51,16 +85,7 @@ export function registerLogin(program: Command): void {
     .action((harnesses: string[], opts: Opts) => {
       try {
         const check = opts.check === true;
-
-        let targets: HarnessKind[];
-        if (harnesses.length > 0) {
-          for (const h of harnesses) {
-            if (!isHarnessKind(h)) throw new Error(`unknown harness "${h}"`);
-          }
-          targets = harnesses as HarnessKind[];
-        } else {
-          targets = HARNESSES.filter(isInstalled);
-        }
+        const targets = resolveLoginTargets(harnesses);
 
         if (targets.length === 0) {
           const message = 'no coding-agent harnesses detected (claude, codex, opencode, gemini)';
@@ -72,20 +97,7 @@ export function registerLogin(program: Command): void {
           return;
         }
 
-        const results: LoginReport[] = [];
-        for (const kind of targets) {
-          if (check) {
-            const installed = isInstalled(kind);
-            const authenticated = installed && hasCredentials(kind);
-            results.push({ kind, installed, action: 'check', ok: authenticated, exitCode: null, authenticated });
-          } else if (!isInstalled(kind)) {
-            results.push({ kind, installed: false, action: 'login', ok: false, exitCode: null });
-          } else {
-            const { ok, exitCode } = runLoginFlow(kind, opts.json !== true);
-            results.push({ kind, installed: true, action: 'login', ok, exitCode });
-          }
-        }
-
+        const results = targets.map((kind) => evaluateHarnessTarget(kind, check, opts.json === true));
         const allOk = results.every((r) => r.ok);
         if (opts.json) {
           printJson({ ok: allOk, results });
@@ -94,16 +106,7 @@ export function registerLogin(program: Command): void {
         }
 
         for (const r of results) {
-          if (!r.installed) {
-            process.stdout.write(`FAIL  ${r.kind.padEnd(8)} not installed\n`);
-          } else if (r.action === 'check') {
-            process.stdout.write(
-              `${r.ok ? 'ok  ' : 'FAIL'}  ${r.kind.padEnd(8)} ${r.authenticated ? 'authenticated' : 'not authenticated'}\n`
-            );
-          } else {
-            const suffix = r.ok ? '' : ` (exit ${r.exitCode ?? '?'})`;
-            process.stdout.write(`${r.ok ? 'ok  ' : 'FAIL'}  ${r.kind.padEnd(8)} login ${r.ok ? 'ok' : 'failed'}${suffix}\n`);
-          }
+          process.stdout.write(formatLoginReport(r));
         }
         if (!allOk) process.exitCode = 1;
       } catch (err) {

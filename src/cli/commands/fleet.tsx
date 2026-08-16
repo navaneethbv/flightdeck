@@ -145,6 +145,12 @@ function pendingPrompt(state: FleetConsoleState): string | null {
   return null;
 }
 
+function taskStatusColor(status: Task['status']): string | undefined {
+  if (status === 'blocked') return 'red';
+  if (status === 'done') return 'dim';
+  return undefined;
+}
+
 /**
  * The console as a pure view. All state and data arrive as props, so tests can
  * render any snapshot without a tmux session or a live fleet. The parent wires
@@ -155,9 +161,9 @@ export function FleetConsoleView({
   state,
   message,
 }: {
-  snap: ConsoleSnapshot;
-  state: FleetConsoleState;
-  message: string;
+  readonly snap: ConsoleSnapshot;
+  readonly state: FleetConsoleState;
+  readonly message: string;
 }): ReactElement {
   const countsLabel = Object.entries(
     snap.tasks.reduce<Record<string, number>>((acc, t) => {
@@ -212,7 +218,7 @@ export function FleetConsoleView({
             <Box key={t.id} flexDirection="column">
               <Text color={selected ? 'white' : undefined}>
                 <Text color={selected ? 'cyan' : 'dim'}>{marker}</Text>
-                <Text color={t.status === 'blocked' ? 'red' : t.status === 'done' ? 'dim' : undefined}>{` ${t.status.padEnd(9)}`}</Text>
+                <Text color={taskStatusColor(t.status)}>{` ${t.status.padEnd(9)}`}</Text>
                 <Text>{` ${shortId(t.id)}  ${t.title}${attempts}${priority}`}</Text>
               </Text>
               {t.status === 'blocked' && t.verdictReason !== null && (
@@ -247,6 +253,34 @@ export function FleetConsoleView({
       <Text dimColor>{`refresh #${snap.tick}  [c]laim [r]elease [R]esume [k]ill [n]ew [a]ccept [x]reject [u]nblock [p]rioritize [f]orce [q]uit`}</Text>
     </Box>
   );
+}
+
+type ActionKey = 'c' | 'r' | 'R' | 'k' | 'y' | 'n' | 'a' | 'x' | 'u' | 'p' | 'f';
+const CONSOLE_ACTIONS = new Set<string>(['c', 'r', 'R', 'k', 'y', 'n', 'a', 'x', 'u', 'p', 'f']);
+
+function eventFromKey(key: { tab?: boolean; upArrow?: boolean; downArrow?: boolean; escape?: boolean; return?: boolean; backspace?: boolean }): Parameters<typeof reduceConsoleState>[1] | null {
+  if (key.tab) return { type: 'tab' };
+  if (key.upArrow) return { type: 'up' };
+  if (key.downArrow) return { type: 'down' };
+  if (key.escape) return { type: 'cancel' };
+  if (key.return) return { type: 'confirm' };
+  if (key.backspace) return { type: 'backspace' };
+  return null;
+}
+
+function resolveConsoleEvent(
+  input: string,
+  key: { tab?: boolean; upArrow?: boolean; downArrow?: boolean; escape?: boolean; return?: boolean; backspace?: boolean; ctrl?: boolean },
+  pending: FleetConsoleState['pendingAction']
+): Parameters<typeof reduceConsoleState>[1] | 'quit' | null {
+  const keyEvent = eventFromKey(key);
+  if (keyEvent) return keyEvent;
+  if (input === 'q') return pending ? { type: 'cancel' } : 'quit';
+  if (CONSOLE_ACTIONS.has(input)) return { type: 'action', key: input as ActionKey };
+  if (pending?.kind === 'reject' && input.length > 0 && !key.ctrl) {
+    return { type: 'text', value: input };
+  }
+  return null;
 }
 
 function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
@@ -304,37 +338,11 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
   useInput((input, key) => {
     const current = stateRef.current;
     const currentSnap = snapRef.current;
-    const pending = current.pendingAction;
-    let event: Parameters<typeof reduceConsoleState>[1] | null = null;
-
-    if (key.tab) event = { type: 'tab' };
-    else if (key.upArrow) event = { type: 'up' };
-    else if (key.downArrow) event = { type: 'down' };
-    else if (key.escape) event = { type: 'cancel' };
-    else if (key.return) event = { type: 'confirm' };
-    else if (key.backspace) event = { type: 'backspace' };
-    else if (input === 'c') event = { type: 'action', key: 'c' };
-    else if (input === 'r') event = { type: 'action', key: 'r' };
-    else if (input === 'R') event = { type: 'action', key: 'R' };
-    else if (input === 'k') event = { type: 'action', key: 'k' };
-    else if (input === 'y') event = { type: 'action', key: 'y' };
-    else if (input === 'n') event = { type: 'action', key: 'n' };
-    else if (input === 'a') event = { type: 'action', key: 'a' };
-    else if (input === 'x') event = { type: 'action', key: 'x' };
-    else if (input === 'u') event = { type: 'action', key: 'u' };
-    else if (input === 'p') event = { type: 'action', key: 'p' };
-    else if (input === 'f') event = { type: 'action', key: 'f' };
-    else if (input === 'q') {
-      // Quit only when no confirmation or text input is active.
-      if (!pending) process.exit(0);
-      else event = { type: 'cancel' };
-    } else if (pending?.kind === 'reject' && input.length > 0 && !key.ctrl) {
-      event = { type: 'text', value: input };
-    }
-
-    if (!event) return;
-    if (busyRef.current && event.type !== 'cancel') return;
-    const { state: next, effect } = reduceConsoleState(current, event, boundsOf(currentSnap));
+    const resolved = resolveConsoleEvent(input, key, current.pendingAction);
+    if (!resolved) return;
+    if (resolved === 'quit') process.exit(0);
+    if (busyRef.current && resolved.type !== 'cancel') return;
+    const { state: next, effect } = reduceConsoleState(current, resolved, boundsOf(currentSnap));
     setState(next);
     if (effect) runEffect(effect);
   });

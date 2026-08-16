@@ -52,30 +52,61 @@ function printArgusList(list: ReturnType<ArgusManager['list']>): void {
   }
 }
 
+function resolveMissionNoteId(projectRoot: string, opts: Opts): string {
+  if (opts.mission) {
+    const missionNoteId = String(opts.mission);
+    if (!new NotesStore(projectRoot).readNote(missionNoteId)) {
+      throw new Error(`mission note "${missionNoteId}" not found`);
+    }
+    return missionNoteId;
+  }
+  if (opts.missionBody) {
+    const name = opts.name ? String(opts.name) : 'argus';
+    return new NotesStore(projectRoot).createNote(`${name}-mission`, String(opts.missionBody)).id;
+  }
+  throw new Error('argus start requires --mission <note-id> or --mission-body <text>');
+}
+
+function buildArgusStartParams(opts: Opts, missionNoteId: string) {
+  return {
+    name: opts.name !== undefined ? String(opts.name) : undefined,
+    missionNoteId,
+    pulseSec: opts.pulse !== undefined ? parseSeconds(String(opts.pulse)) : undefined,
+    childLimit: opts.children !== undefined ? Number(opts.children) : undefined,
+    riskyTools: opts.riskyTools === true,
+    brainHarness: opts.brainHarness !== undefined ? brainHarness(String(opts.brainHarness)) : undefined,
+    brainPlanModel: opts.brainPlanModel !== undefined ? String(opts.brainPlanModel) : undefined,
+    brainReviewModel: opts.brainReviewModel !== undefined ? String(opts.brainReviewModel) : undefined,
+    workerHarnesses: workerHarnesses((opts.workerHarness as string[] | undefined) ?? []),
+    budgetWindowSec: opts.budgetWindow !== undefined ? parseSeconds(String(opts.budgetWindow)) : undefined,
+    budgetMaxTokens: opts.budgetMaxTokens !== undefined ? positiveInteger(String(opts.budgetMaxTokens), 'budget maximum') : undefined,
+    maxAttemptsPerTask: opts.maxAttempts !== undefined ? positiveInteger(String(opts.maxAttempts), 'maximum attempts') : undefined,
+    maxTasks: opts.maxTasks !== undefined ? positiveInteger(String(opts.maxTasks), 'maximum tasks') : undefined,
+    questionTimeoutSec: opts.questionTimeout !== undefined ? parseSeconds(String(opts.questionTimeout)) : undefined,
+    conventionsNoteId: opts.conventions !== undefined ? String(opts.conventions) : undefined,
+  };
+}
+
 export function registerArgus(program: Command): void {
   const argus = program.command('argus').description('Multi-agent orchestrator driven by a mission note');
 
   argus
     .command('init')
     .description('Initialize a new Mission note using a template')
-    .argument('<name>', 'mission name')
-    .option('--template <feature|refactor|audit|bugfix>', 'mission template kind', 'feature')
-    .option('--title <title>', 'mission title')
+    .argument('<name>', 'mission name (will create a note titled <name>-mission)')
+    .option('--template <kind>', 'template: feature | refactor | audit | bugfix', 'feature')
+    .option('--title <title>', 'human title for the mission note')
     .option('--project <path>', 'project root (default: current directory)')
     .option('--json', 'emit machine-readable output')
     .action((name: string, opts: Opts) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
         const title = opts.title ? String(opts.title) : name;
-        const template = (opts.template as MissionTemplateKind) ?? 'feature';
+        const template = (opts.template as MissionTemplateKind | undefined) ?? 'feature';
         const body = renderMissionTemplate(template, title);
         const note = new NotesStore(projectRoot).createNote(`${name}-mission`, body);
-        if (opts.json) {
-          printJson({ note, template, name });
-          return;
-        }
-        process.stdout.write(`created mission note "${note.title}" (${note.id}) using ${template} template\n`);
-        process.stdout.write(`start fleet with: deck argus start --name ${name} --mission ${note.id}\n`);
+        if (opts.json) printJson({ note, template, name });
+        else process.stdout.write(`created mission note "${note.title}" (${note.id}) using ${template} template\n`);
       } catch (err) {
         handleError(err);
       }
@@ -110,34 +141,9 @@ export function registerArgus(program: Command): void {
     .action(async (opts: Opts) => {
       try {
         const projectRoot = projectRootOf(opts.project as string | undefined);
-        let missionNoteId: string | undefined;
-        if (opts.mission) {
-          missionNoteId = String(opts.mission);
-          if (!new NotesStore(projectRoot).readNote(missionNoteId)) throw new Error(`mission note "${missionNoteId}" not found`);
-        } else if (opts.missionBody) {
-          const name = opts.name ? String(opts.name) : 'argus';
-          missionNoteId = new NotesStore(projectRoot).createNote(`${name}-mission`, String(opts.missionBody)).id;
-        } else {
-          throw new Error('argus start requires --mission <note-id> or --mission-body <text>');
-        }
+        const missionNoteId = resolveMissionNoteId(projectRoot, opts);
         const manager = new ArgusManager(projectRoot);
-        const argus = manager.start({
-          name: opts.name !== undefined ? String(opts.name) : undefined,
-          missionNoteId,
-          pulseSec: opts.pulse !== undefined ? parseSeconds(String(opts.pulse)) : undefined,
-          childLimit: opts.children !== undefined ? Number(opts.children) : undefined,
-          riskyTools: opts.riskyTools === true,
-          brainHarness: opts.brainHarness !== undefined ? brainHarness(String(opts.brainHarness)) : undefined,
-          brainPlanModel: opts.brainPlanModel !== undefined ? String(opts.brainPlanModel) : undefined,
-          brainReviewModel: opts.brainReviewModel !== undefined ? String(opts.brainReviewModel) : undefined,
-          workerHarnesses: workerHarnesses((opts.workerHarness as string[] | undefined) ?? []),
-          budgetWindowSec: opts.budgetWindow !== undefined ? parseSeconds(String(opts.budgetWindow)) : undefined,
-          budgetMaxTokens: opts.budgetMaxTokens !== undefined ? positiveInteger(String(opts.budgetMaxTokens), 'budget maximum') : undefined,
-          maxAttemptsPerTask: opts.maxAttempts !== undefined ? positiveInteger(String(opts.maxAttempts), 'maximum attempts') : undefined,
-          maxTasks: opts.maxTasks !== undefined ? positiveInteger(String(opts.maxTasks), 'maximum tasks') : undefined,
-          questionTimeoutSec: opts.questionTimeout !== undefined ? parseSeconds(String(opts.questionTimeout)) : undefined,
-          conventionsNoteId: opts.conventions !== undefined ? String(opts.conventions) : undefined,
-        });
+        const argus = manager.start(buildArgusStartParams(opts, missionNoteId));
         if (opts.json) printJson({ argus, message: 'running in foreground; press Ctrl+C to stop' });
         else process.stdout.write(`argus ${argus.name} (${argus.id}) running; mission note ${missionNoteId}\n`);
         await manager.runForever(argus.id);
