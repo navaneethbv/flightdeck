@@ -18,7 +18,7 @@
 - Run `npm run build` before any direct `npx vitest` call. Integration and e2e specs spawn `dist/cli/index.js` as a real child process, so a stale `dist/` tests the previous build.
 - Every list and detail CLI command supports `--json`.
 - Never display a fabricated value. Unknown data renders blank, never zero. A claimed session reports no token usage, so its spend renders blank.
-- **tmux must never receive a secret in argv.** Anything visible to `ps` is a leak. Pass environment through `tmux -e` flags, never as `env KEY=VAL` in a command.
+- **Never pass a session token to tmux at all.** Every tmux argument is visible to `ps`, including `-e KEY=VAL` values, so `-e` is not a hiding place. It is not needed either: nothing reads `FLIGHTDECK_SESSION_TOKEN` from the environment, and the generated MCP config already carries the token to the MCP server through its `--token` argument. Pass non-secret environment (profile directories, session id) through `-e`, and pass the token nowhere.
 - Every action the console offers must also be a `deck` command calling the same function.
 - Never use an em dash (U+2014) in code, comments, strings, or docs. Use a comma, colon, semicolon, hyphen, or parentheses.
 - Do not add a co-author trailer to commit messages.
@@ -294,16 +294,17 @@ describe('Tmux', () => {
     ]);
   });
 
-  it('passes environment through -e flags, never through argv', () => {
+  it('passes environment through -e flags rather than an env prefix', () => {
     const { run, calls } = fakeRunner();
-    new Tmux(run).respawnPane('%7', '/repo', ['claude'], { FLIGHTDECK_SESSION_TOKEN: 'secret' });
+    new Tmux(run).respawnPane('%7', '/repo', ['claude'], { CLAUDE_CONFIG_DIR: '/profiles/a' });
     expect(calls[0]).toEqual([
       'respawn-pane', '-k', '-t', '%7', '-c', '/repo',
-      '-e', 'FLIGHTDECK_SESSION_TOKEN=secret', '--', 'claude',
+      '-e', 'CLAUDE_CONFIG_DIR=/profiles/a', '--', 'claude',
     ]);
-    // The secret must ride on a -e flag, not inside the command itself.
+    // Only non-secret values ever travel this way; see the global constraint
+    // on tokens. The command itself stays free of environment noise.
     const commandPart = calls[0].slice(calls[0].indexOf('--') + 1);
-    expect(commandPart.join(' ')).not.toContain('secret');
+    expect(commandPart).toEqual(['claude']);
   });
 
   it('parses list-panes output including panes with no session tag', () => {
@@ -1008,8 +1009,9 @@ describe('claim and release', () => {
       const respawn = calls.find((c) => c[0] === 'respawn-pane');
       expect(respawn).toBeDefined();
       expect(respawn![3]).toBe('%5');
-      // The harness runs directly; the token rides on -e, never in argv.
       expect(respawn!.slice(respawn!.indexOf('--') + 1)).toEqual(['claude']);
+      // The token must appear nowhere in the tmux invocation, including in a
+      // -e value: every tmux argument is visible to `ps`.
       expect(respawn!.join(' ')).not.toContain(worker.token);
 
       // The MCP config and token survive, so worker tools keep working.
@@ -1022,7 +1024,7 @@ describe('claim and release', () => {
     }
   });
 
-  it('passes the session token through a -e flag', async () => {
+  it('passes the session id but never the token', async () => {
     const fixture = makeRepo();
     const harness = makeFakeHarness('claude');
     try {
@@ -1041,8 +1043,12 @@ describe('claim and release', () => {
 
       const respawn = calls.find((c) => c[0] === 'respawn-pane')!;
       const envFlags = respawn.filter((_, i) => respawn[i - 1] === '-e');
-      expect(envFlags).toContain(`FLIGHTDECK_SESSION_TOKEN=${worker.token}`);
       expect(envFlags).toContain(`FLIGHTDECK_SESSION_ID=${worker.id}`);
+      // Nothing reads FLIGHTDECK_SESSION_TOKEN from the environment, and the
+      // generated MCP config already carries the token to the MCP server. So
+      // claim passes it nowhere, and no `ps` ever sees it.
+      expect(envFlags.some((f) => f.startsWith('FLIGHTDECK_SESSION_TOKEN'))).toBe(false);
+      expect(envFlags.join(' ')).not.toContain(worker.token);
     } finally {
       harness.cleanup();
       fixture.cleanup();
@@ -1132,12 +1138,14 @@ Append these methods to `FleetManager`:
     }
 
     const adapter = getAdapter(session.harness);
-    // Environment rides on tmux -e flags. Putting a token in argv would
-    // expose it to any local `ps`.
+    // Deliberately no FLIGHTDECK_SESSION_TOKEN. Every tmux argument is visible
+    // to `ps`, including a -e value, so there is no safe way to pass a secret
+    // here. There is also no need: nothing reads that variable from the
+    // environment, and the session's generated MCP config already hands the
+    // token to the MCP server through its --token argument.
     const env: Record<string, string> = {
       ...(adapter.profileEnv(session) as Record<string, string>),
       FLIGHTDECK_SESSION_ID: session.id,
-      FLIGHTDECK_SESSION_TOKEN: session.token,
     };
     this.tmux.respawnPane(
       paneId,
