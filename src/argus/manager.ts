@@ -227,6 +227,7 @@ export class ArgusManager {
       .prepare('SELECT brain_plan_model, max_tasks FROM argus WHERE id = ?')
       .get(id) as { brain_plan_model?: string; max_tasks?: number };
 
+    const existingList = existing.map((t) => `- ${t.title} [${t.status}]`).join('\n');
     const prompt = [
       'You are the orchestrator of a fleet of coding agents.',
       'Break the mission below into independent tasks that separate agents can work on in isolated git worktrees.',
@@ -234,9 +235,7 @@ export class ArgusManager {
       'Mission:',
       mission.body,
       '',
-      existing.length > 0
-        ? `Tasks already on the board (do not repeat them):\n${existing.map((t) => `- ${t.title} [${t.status}]`).join('\n')}`
-        : '',
+      existing.length > 0 ? `Tasks already on the board (do not repeat them):\n${existingList}` : '',
       '',
       'Reply with JSON only, in exactly this shape:',
       '{"tasks":[{"title":"short name","spec":"what to do and how to verify it","depends_on":[]}]}',
@@ -335,9 +334,19 @@ export class ArgusManager {
 
     for (const verdict of verdicts) {
       if (verdict.verdict === 'need_files') {
-        // Tier 2 re-queue is a follow-up call; leave the task queued and
-        // record what the brain asked for.
-        this.writeProgress(id, null, 'review_need_files', verdict.paths.join(', '));
+        // Tier 2 file attachment is not built yet. Leaving the task in
+        // `in_review` would make the next pulse re-review it, draw the same
+        // verdict, and repeat forever, which is exactly the runaway brain
+        // spend this subsystem exists to prevent. Send it back to the worker
+        // instead: that costs cheap tokens, usually fixes the real problem (a
+        // thin summary), and terminates through `max_attempts_per_task`.
+        const paths = verdict.paths.join(', ');
+        this.writeProgress(id, null, 'review_need_files', paths);
+        this.board.recordVerdict(
+          verdict.taskId,
+          'revise',
+          `The reviewer could not judge this from your summary and asked to see: ${paths || '(unspecified files)'}. Expand your report: describe what changed in those files and how you verified it, then report again.`
+        );
         continue;
       }
       this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);

@@ -189,4 +189,39 @@ describe('orchestration', () => {
       fixture.cleanup();
     }
   });
+
+  it('does not re-review a need_files task forever', async () => {
+    const fixture = makeRepo();
+    try {
+      let reviewCalls = 0;
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        if (opts.label !== 'review') return '{}';
+        reviewCalls += 1;
+        const queued = board.list(argusId, 'in_review');
+        return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      await manager.drainReviews(argusId);
+
+      // The task must leave the review queue, or every later pulse re-reviews
+      // it and burns brain tokens on an identical verdict.
+      expect(board.get(task.id)?.status).toBe('revising');
+      expect(board.get(task.id)?.attempts).toBe(1);
+      expect(board.list(argusId, 'in_review')).toHaveLength(0);
+      expect(String(board.get(task.id)?.verdictReason)).toContain('src/a.ts');
+
+      // A second drain has nothing queued, so the brain is not called again.
+      await manager.drainReviews(argusId);
+      expect(reviewCalls).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });

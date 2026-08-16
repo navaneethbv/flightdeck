@@ -2907,6 +2907,6 @@ git commit -m "feat(cli): add argus board, budget, task, and plan commands"
 
 These are named in the spec but are deliberately not in this plan. Do not implement them.
 
-- **Tier 2 file attachment.** `drainReviews` records a `need_files` verdict and leaves the task queued; it does not yet re-invoke the brain with file contents attached. The budget ladder already disables tier 2 above 60 percent, so the common path is unaffected.
+- **Tier 2 file attachment.** `drainReviews` does not yet re-invoke the brain with file contents attached. Until it does, a `need_files` verdict is converted into a `revise` and sent back to the worker, carrying the paths the brain asked for. Leaving the task in `in_review` instead would make every later pulse re-review it and draw the same verdict, burning brain tokens in an unbounded loop; routing it to the worker costs cheap tokens and terminates through `max_attempts_per_task`. When tier 2 lands, that branch is what changes.
 - **The tmux fleet window.** Phase 2, separate spec.
 - **A human override command** for changing a verdict or re-prioritising the board mid-mission.
