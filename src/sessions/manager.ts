@@ -222,6 +222,14 @@ export class SessionManager {
             // ignore
           }
         });
+        child.on('close', () => {
+          try {
+            const text = collector.flush();
+            if (text) logStream?.write(text);
+          } catch {
+            // ignore
+          }
+        });
       } catch (err) {
         log.error(`session ${session.id} collector setup error: ${(err as Error).message}`);
       }
@@ -229,20 +237,18 @@ export class SessionManager {
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
       running.delete(id);
-      const closeDb = getDb(this.projectRoot);
-      const current = this.get(id);
-      if (current?.claimedAt) {
-        // Human takeover: do not overwrite status or end timestamps when the
-        // headless child process closes.
-        return;
+      try {
+        const dbNow = getDb(this.projectRoot);
+        // A claimed session is owned by a human in a fleet pane. Its headless
+        // child has already been stopped on purpose, so this close event must
+        // not overwrite the running/claimed state the claim just recorded.
+        // The claimed_at guard makes the update a no-op for either event order.
+        dbNow.prepare(
+          'UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, last_activity_at = ? WHERE id = ? AND claimed_at IS NULL'
+        ).run(code === 0 ? 'stopped' : 'failed', now(), code, now(), id);
+      } catch {
+        // db might be cleaned up in tests
       }
-      const finalStatus = code === 0 ? 'stopped' : 'failed';
-      closeDb
-        .prepare(
-          'UPDATE sessions SET status = ?, exit_code = ?, ended_at = ?, last_activity_at = ? WHERE id = ?'
-        )
-        .run(finalStatus, code, now(), now(), id);
-
       if (logStream) {
         try {
           await new Promise<void>((resolve) => {
