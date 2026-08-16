@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { getDb } from '../../src/core/state.js';
 import { loadConfig } from '../../src/core/config.js';
+import { ArgusManager } from '../../src/argus/manager.js';
+import { SessionManager } from '../../src/sessions/manager.js';
 import { makeRepo } from '../helpers.js';
 
 function columns(db: ReturnType<typeof getDb>, table: string): string[] {
@@ -62,5 +64,51 @@ describe('orchestrator schema', () => {
     const config = loadConfig();
     expect(config.argus.gateTestCommand).toBe('npm test');
     expect(config.argus.gateLintCommand).toBe('npm run lint');
+  });
+
+  it('persists and returns the selected brain, workers, models, and limits', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root);
+      const argus = manager.start({
+        name: 'codex-opencode',
+        brainHarness: 'codex',
+        brainPlanModel: 'gpt-5.6-sol',
+        brainReviewModel: 'gpt-5.6-terra',
+        workerHarnesses: ['opencode'],
+        budgetWindowSec: 7200,
+        budgetMaxTokens: 250000,
+        maxAttemptsPerTask: 4,
+        maxTasks: 24,
+        questionTimeoutSec: 45,
+      });
+
+      expect(argus).toMatchObject({
+        brainHarness: 'codex',
+        brainPlanModel: 'gpt-5.6-sol',
+        brainReviewModel: 'gpt-5.6-terra',
+        workerHarnesses: ['opencode'],
+        budgetWindowSec: 7200,
+        budgetMaxTokens: 250000,
+        maxAttemptsPerTask: 4,
+        maxTasks: 24,
+        questionTimeoutSec: 45,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects invalid roles before creating rows', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root);
+      expect(() => manager.start({ brainHarness: 'opencode' as never })).toThrow(/brain harness/);
+      expect(() => manager.start({ workerHarnesses: [] })).toThrow(/worker harness/);
+      expect(manager.list()).toHaveLength(0);
+      expect(new SessionManager(fixture.root).list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

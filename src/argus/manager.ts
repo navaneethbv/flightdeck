@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
-import type { Argus, HarnessKind, Task } from '../core/types.js';
+import type { Argus, BrainHarness, HarnessKind, Task, WorkerHarness } from '../core/types.js';
 import { SessionManager } from '../sessions/manager.js';
 import { NotesStore } from '../notes/store.js';
 import { TablesStore } from '../tables/store.js';
@@ -20,6 +20,54 @@ export interface StartArgusOptions {
   pulseSec?: number;
   childLimit?: number;
   riskyTools?: boolean;
+  brainHarness?: BrainHarness;
+  brainPlanModel?: string;
+  brainReviewModel?: string;
+  workerHarnesses?: WorkerHarness[];
+  budgetWindowSec?: number;
+  budgetMaxTokens?: number;
+  budgetCountCacheReads?: boolean;
+  maxAttemptsPerTask?: number;
+  maxTasks?: number;
+  questionTimeoutSec?: number;
+}
+
+function validateStartOptions(opts: StartArgusOptions): void {
+  if (opts.brainHarness !== undefined && !['claude', 'codex'].includes(opts.brainHarness)) {
+    throw new Error(`brain harness must be claude or codex (got ${opts.brainHarness})`);
+  }
+  if (opts.workerHarnesses !== undefined) {
+    if (opts.workerHarnesses.length === 0) throw new Error('at least one worker harness is required');
+    const invalid = opts.workerHarnesses.find((h) => h !== 'opencode' && h !== 'gemini');
+    if (invalid) throw new Error(`worker harness must be opencode or gemini (got ${invalid})`);
+  }
+  for (const [name, value] of [
+    ['budget window', opts.budgetWindowSec],
+    ['budget maximum', opts.budgetMaxTokens],
+    ['maximum attempts', opts.maxAttemptsPerTask],
+    ['maximum tasks', opts.maxTasks],
+    ['question timeout', opts.questionTimeoutSec],
+  ] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+      throw new Error(`${name} must be a positive integer`);
+    }
+  }
+}
+
+function parseWorkerHarnesses(raw: unknown): WorkerHarness[] {
+  try {
+    const parsed = JSON.parse(typeof raw === 'string' ? raw : '[]') as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every((value) => value === 'opencode' || value === 'gemini')
+    ) {
+      return parsed;
+    }
+  } catch {
+    // Legacy or externally corrupted row falls through to the safe default.
+  }
+  return ['opencode'];
 }
 
 export interface ArgusChild {
@@ -42,6 +90,16 @@ function rowToArgus(row: Record<string, unknown>): Argus {
     managerSessionId: typeof row.manager_session_id === 'string' ? row.manager_session_id : null,
     createdAt: Number(row.created_at),
     lastPulseAt: row.last_pulse_at === null ? null : Number(row.last_pulse_at),
+    brainHarness: (row.brain_harness === 'codex' ? 'codex' : 'claude') as BrainHarness,
+    brainPlanModel: typeof row.brain_plan_model === 'string' ? row.brain_plan_model : null,
+    brainReviewModel: typeof row.brain_review_model === 'string' ? row.brain_review_model : null,
+    workerHarnesses: parseWorkerHarnesses(row.worker_harnesses),
+    budgetWindowSec: Number(row.budget_window_sec),
+    budgetMaxTokens: Number(row.budget_max_tokens),
+    budgetCountCacheReads: Number(row.budget_count_cache_reads) === 1,
+    maxAttemptsPerTask: Number(row.max_attempts_per_task),
+    maxTasks: Number(row.max_tasks),
+    questionTimeoutSec: Number(row.question_timeout_sec),
   };
 }
 
@@ -102,6 +160,7 @@ export class ArgusManager {
   }
 
   start(opts: StartArgusOptions = {}): Argus {
+    validateStartOptions(opts);
     this.ensureProgressTable();
     const id = crypto.randomUUID();
     const cap = randomToken();
@@ -126,13 +185,29 @@ export class ArgusManager {
       managerSessionId: managerSession.id,
       createdAt: now(),
       lastPulseAt: null,
+      brainHarness: opts.brainHarness ?? 'claude',
+      brainPlanModel: opts.brainPlanModel ?? null,
+      brainReviewModel: opts.brainReviewModel ?? null,
+      workerHarnesses: opts.workerHarnesses ?? ['opencode'],
+      budgetWindowSec: opts.budgetWindowSec ?? 18000,
+      budgetMaxTokens: opts.budgetMaxTokens ?? 1000000,
+      budgetCountCacheReads: opts.budgetCountCacheReads ?? true,
+      maxAttemptsPerTask: opts.maxAttemptsPerTask ?? 3,
+      maxTasks: opts.maxTasks ?? 100,
+      questionTimeoutSec: opts.questionTimeoutSec ?? 120,
     };
     if (![2, 4, 8, 16].includes(argus.childLimit)) {
       throw new Error(`child limit must be one of 2, 4, 8, 16 (got ${argus.childLimit})`);
     }
     this.db
       .prepare(
-        'INSERT INTO argus (id, name, project_root, mission_note_id, cap, child_limit, pulse_sec, risky_tools, status, manager_session_id, created_at, last_pulse_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        `INSERT INTO argus (
+          id, name, project_root, mission_note_id, cap, child_limit, pulse_sec, risky_tools,
+          status, manager_session_id, created_at, last_pulse_at,
+          brain_harness, brain_plan_model, brain_review_model, worker_harnesses,
+          budget_window_sec, budget_max_tokens, budget_count_cache_reads,
+          max_attempts_per_task, max_tasks, question_timeout_sec
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         argus.id,
@@ -146,10 +221,20 @@ export class ArgusManager {
         argus.status,
         argus.managerSessionId,
         argus.createdAt,
-        argus.lastPulseAt
+        argus.lastPulseAt,
+        argus.brainHarness,
+        argus.brainPlanModel,
+        argus.brainReviewModel,
+        JSON.stringify(argus.workerHarnesses),
+        argus.budgetWindowSec,
+        argus.budgetMaxTokens,
+        argus.budgetCountCacheReads ? 1 : 0,
+        argus.maxAttemptsPerTask,
+        argus.maxTasks,
+        argus.questionTimeoutSec
       );
     this.writeProgress(argus.id, null, 'argus_created', `child_limit=${argus.childLimit} pulse=${argus.pulseSec}s`);
-    return argus;
+    return this.get(id)!;
   }
 
   async runForever(id: string): Promise<void> {
