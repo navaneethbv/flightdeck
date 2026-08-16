@@ -5,8 +5,32 @@ import { NotesStore } from '../../notes/store.js';
 import { renderMissionTemplate, type MissionTemplateKind } from '../../argus/templates.js';
 import { TaskBoard } from '../../argus/board.js';
 import { budgetState } from '../../argus/budget.js';
+import type { BrainHarness, WorkerHarness } from '../../core/types.js';
 
 type Opts = Record<string, string | boolean | undefined>;
+
+function positiveInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function brainHarness(value: string): BrainHarness {
+  if (value !== 'claude' && value !== 'codex') {
+    throw new Error(`brain harness must be claude or codex (got ${value})`);
+  }
+  return value;
+}
+
+function workerHarnesses(values: string[]): WorkerHarness[] | undefined {
+  if (values.length === 0) return undefined;
+  for (const value of values) {
+    if (value !== 'opencode' && value !== 'gemini') {
+      throw new Error(`worker harness must be opencode or gemini (got ${value})`);
+    }
+  }
+  return values as WorkerHarness[];
+}
 
 function printArgusFleet(fleet: ReturnType<ArgusManager['fleet']>): void {
   process.stdout.write(`argus ${fleet.argus.name} (${fleet.argus.id}) ${fleet.argus.status}\n`);
@@ -66,6 +90,20 @@ export function registerArgus(program: Command): void {
     .option('--pulse <duration>', 'pulse interval, e.g. 30s, 5m, 1h (default 60s)')
     .option('--children <2|4|8|16>', 'max child sessions (default 8)')
     .option('--risky-tools', 'allow children to run playbooks, SSH, and remote execution')
+    .option('--brain-harness <claude|codex>', 'reasoning brain harness', 'claude')
+    .option('--brain-plan-model <model>', 'model for planning and tier 2 review')
+    .option('--brain-review-model <model>', 'model for tier 1 review and answers')
+    .option(
+      '--worker-harness <opencode|gemini>',
+      'worker harness, repeat for round-robin workers',
+      (value: string, prior: string[]) => [...prior, value],
+      []
+    )
+    .option('--budget-window <duration>', 'rolling brain budget window, for example 2h')
+    .option('--budget-max-tokens <count>', 'maximum brain tokens in the window')
+    .option('--max-attempts <count>', 'attempt limit per task')
+    .option('--max-tasks <count>', 'task count ceiling for the mission')
+    .option('--question-timeout <duration>', 'worker question timeout')
     .option('--project <path>', 'project root (default: current directory)')
     .option('--json', 'emit machine-readable output')
     .action(async (opts: Opts) => {
@@ -88,6 +126,15 @@ export function registerArgus(program: Command): void {
           pulseSec: opts.pulse !== undefined ? parseSeconds(String(opts.pulse)) : undefined,
           childLimit: opts.children !== undefined ? Number(opts.children) : undefined,
           riskyTools: opts.riskyTools === true,
+          brainHarness: opts.brainHarness !== undefined ? brainHarness(String(opts.brainHarness)) : undefined,
+          brainPlanModel: opts.brainPlanModel !== undefined ? String(opts.brainPlanModel) : undefined,
+          brainReviewModel: opts.brainReviewModel !== undefined ? String(opts.brainReviewModel) : undefined,
+          workerHarnesses: workerHarnesses((opts.workerHarness as string[] | undefined) ?? []),
+          budgetWindowSec: opts.budgetWindow !== undefined ? parseSeconds(String(opts.budgetWindow)) : undefined,
+          budgetMaxTokens: opts.budgetMaxTokens !== undefined ? positiveInteger(String(opts.budgetMaxTokens), 'budget maximum') : undefined,
+          maxAttemptsPerTask: opts.maxAttempts !== undefined ? positiveInteger(String(opts.maxAttempts), 'maximum attempts') : undefined,
+          maxTasks: opts.maxTasks !== undefined ? positiveInteger(String(opts.maxTasks), 'maximum tasks') : undefined,
+          questionTimeoutSec: opts.questionTimeout !== undefined ? parseSeconds(String(opts.questionTimeout)) : undefined,
         });
         if (opts.json) printJson({ argus, message: 'running in foreground; press Ctrl+C to stop' });
         else process.stdout.write(`argus ${argus.name} (${argus.id}) running; mission note ${missionNoteId}\n`);
