@@ -171,7 +171,7 @@ deck argus start \
 | `deck fleet console` | Interactive control pane with selectable workers and tasks |
 | `deck fleet claim <session-id> [--json]` | Take over a worker in its pane |
 | `deck fleet release <session-id> [--resume] [--json]` | End a claim and return the pane to the log |
-| `deck fleet kill <session-id> --yes [--json]` | Stop a worker and block its active task while preserving the worktree |
+| `deck fleet kill <session-id> [--yes] [--json]` | Stop a worker and block its active task while preserving the worktree |
 | `deck fleet worker start --argus <id> [--json]` | Spawn one worker for the highest-priority dispatchable task |
 | `deck fleet override accept\|reject\|unblock\|prioritize <task-id> [reason] --argus <id> [--json]` | Human overrides of brain decisions |
 | `deck fleet override force-review --argus <id> [--json]` | Drain the review queue now, below the budget ceiling |
@@ -196,7 +196,10 @@ Console keys (Tab switches between the Workers and Tasks lists, arrows move the 
 | `f` | Force review for the selected fleet |
 | `q` | Quit only when no confirmation or text input is active |
 
-A new worker always consumes the highest-priority ready task, so a manual spawn can never create an untracked agent.
+The console drives a single fleet.
+With zero or more than one Argus row it shows an error and directs the operator to the CLI with `--argus <id>`.
+Pressing `n` spawns a worker for the highest-priority dispatchable task whether or not a worker is currently selected.
+`deck fleet kill <session-id>` prompts for confirmation on a terminal and requires `--yes` in a non-interactive process.
 Kill preserves the worktree and blocks the active task so a human can inspect it before unblocking.
 Task overrides require an explicit `--argus <id>` when more than one fleet exists; the newest fleet is never guessed.
 

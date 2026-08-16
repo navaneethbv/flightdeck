@@ -6,9 +6,8 @@ import { NotesStore } from '../../src/notes/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
-import { TablesStore } from '../../src/tables/store.js';
 import { getDb } from '../../src/core/state.js';
-import { makeRepo, makeFakeHarness, spawnCli } from '../helpers.js';
+import { makeRepo, spawnCli } from '../helpers.js';
 
 /** Polls `probe` until it returns a truthy value or `timeoutMs` elapses. */
 async function waitFor<T>(probe: () => T | null, timeoutMs = 15000): Promise<T> {

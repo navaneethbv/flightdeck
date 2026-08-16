@@ -8,7 +8,6 @@ import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { NotesStore } from '../../src/notes/store.js';
-import { getDb } from '../../src/core/state.js';
 import { makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
 
 // Names, accounts and paths traced from the reference screenshot. The
