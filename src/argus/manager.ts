@@ -12,7 +12,8 @@ import { TaskBoard } from './board.js';
 import { budgetState, reviewBatchSize } from './budget.js';
 import { runGates, computeDiffstat, gateCommandsFromConfig, type GateCommands } from './gates.js';
 import { QuestionQueue } from './questions.js';
-import { invokeBrain, parsePlan, parseReview, parseAnswer, type BrainInvocation } from './brain.js';
+import { invokeBrain, parsePlan, parseReview, parseAnswer, type BrainInvocation, type Verdict } from './brain.js';
+import { loadReviewFiles } from './review-files.js';
 
 export interface StartArgusOptions {
   name?: string;
@@ -567,24 +568,101 @@ export class ArgusManager {
 
     for (const verdict of verdicts) {
       if (verdict.verdict === 'need_files') {
-        // Tier 2 file attachment is not built yet. Leaving the task in
-        // `in_review` would make the next pulse re-review it, draw the same
-        // verdict, and repeat forever, which is exactly the runaway brain
-        // spend this subsystem exists to prevent. Send it back to the worker
-        // instead: that costs cheap tokens, usually fixes the real problem (a
-        // thin summary), and terminates through `max_attempts_per_task`.
-        const paths = verdict.paths.join(', ');
-        this.writeProgress(id, null, 'review_need_files', paths);
-        this.board.recordVerdict(
-          verdict.taskId,
-          'revise',
-          `The reviewer could not judge this from your summary and asked to see: ${paths || '(unspecified files)'}. Expand your report: describe what changed in those files and how you verified it, then report again.`
-        );
+        await this.tierTwoReview(id, verdict);
         continue;
       }
       this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);
       this.writeProgress(id, null, `review_${verdict.verdict}`, verdict.taskId);
     }
+  }
+
+  /**
+   * Tier 2. One bounded brain call that may read specific files from the
+   * assigned worker's worktree. Runs only under the plan model budget band and
+   * never mixes worktrees into one prompt. A repeated `need_files` becomes one
+   * concrete revision so a model cannot loop forever.
+   */
+  private async tierTwoReview(id: string, verdict: Verdict): Promise<void> {
+    const paths = verdict.paths;
+    const budgetAfterTier1 = budgetState(this.projectRoot, id);
+    if (!budgetAfterTier1.policy.tier2Allowed) {
+      const detail = `requested file review was unavailable under the current budget (tier ${budgetAfterTier1.tier})`;
+      this.writeProgress(id, null, 'review_files_disabled', detail);
+      this.board.recordVerdict(
+        verdict.taskId,
+        'revise',
+        `The reviewer asked to see ${paths.join(', ') || '(unspecified files)'}, but ${detail}. Expand your report and report again.`
+      );
+      return;
+    }
+    const task = this.board.get(verdict.taskId);
+    if (!task) return;
+    const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
+    if (!session) {
+      this.board.recordVerdict(
+        verdict.taskId,
+        'revise',
+        'The reviewer asked to see files, but the worker session no longer exists. Expand your report and report again.'
+      );
+      return;
+    }
+    const files = loadReviewFiles(session.cwd, paths);
+    const row = this.db
+      .prepare('SELECT brain_plan_model FROM argus WHERE id = ?')
+      .get(id) as { brain_plan_model?: string };
+
+    const entries = files
+      .map((file) => {
+        const head = [`File: ${file.path}`];
+        if (file.error) head.push(`Error: ${file.error}`);
+        else if (file.content !== null) {
+          head.push(file.truncated ? 'Content (truncated):' : 'Content:');
+          head.push(file.content);
+        }
+        return head.join('\n');
+      })
+      .join('\n\n---\n\n');
+
+    const prompt = [
+      `Review task ${task.id}: ${task.title}`,
+      `Spec: ${task.spec}`,
+      `Worker summary: ${task.workerReport?.summary ?? '(none)'}`,
+      '',
+      'You asked to see specific files. They are attached below, bounded to 32 KiB each and 128 KiB total.',
+      '',
+      entries,
+      '',
+      'Decide now. Reply with JSON only:',
+      '{"verdicts":[{"task_id":"...","verdict":"accept|revise","reason":"..."}]}',
+    ].join('\n');
+
+    const tier2 = await this.brainJson(
+      id,
+      { prompt, model: row.brain_plan_model ?? null, label: 'review-files' },
+      (stdout) => {
+        const verdicts = parseReview(stdout);
+        if (verdicts.length !== 1 || verdicts[0].taskId !== task.id) {
+          throw new Error(`expected exactly one verdict for ${task.id}`);
+        }
+        return verdicts;
+      }
+    );
+    const second = tier2[0];
+    if (second.verdict === 'accept') {
+      this.board.recordVerdict(task.id, 'accept', second.reason);
+      this.writeProgress(id, task.assigneeSession, 'review_accept', task.id);
+      return;
+    }
+    // A second need_files (or any revise) becomes one concrete revision so the
+    // model cannot loop on file requests forever.
+    this.board.recordVerdict(
+      task.id,
+      'revise',
+      second.verdict === 'need_files'
+        ? 'The reviewer again requested files it was already given. Expand the report with a precise description of the changes and verification, then report again.'
+        : second.reason ?? 'Revision requested after file review.'
+    );
+    this.writeProgress(id, task.assigneeSession, 'review_revise', task.id);
   }
 
   /** Answers queued worker questions, one brain call each. */

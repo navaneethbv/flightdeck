@@ -447,6 +447,138 @@ describe('orchestration', () => {
     }
   });
 
+  it('loads requested files only in a second bounded brain review call', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const sourceContents = 'export const a = 1;\n';
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(path.join(worktree, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(worktree, 'src', 'a.ts'), sourceContents);
+      const calls: { label: string; model: string | null; prompt: string }[] = [];
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        calls.push({ label: opts.label, model: opts.model ?? null, prompt: opts.prompt ?? '' });
+        const queued = board.list(argusId, 'in_review');
+        if (opts.label === 'review') {
+          return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
+        }
+        if (opts.label === 'review-files') {
+          return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"accept"}]}`;
+        }
+        return '{}';
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      getDb(fixture.root)
+        .prepare("UPDATE argus SET brain_review_model = 'review-model', brain_plan_model = 'plan-model' WHERE id = ?")
+        .run(argusId);
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1', harness: 'opencode', cwd: worktree, policy: 'child', argusParent: argusId,
+      });
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      await manager.drainReviews(argusId);
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0].model).toBe('review-model');
+      expect(calls[0].prompt).not.toContain(sourceContents);
+      expect(calls[1].model).toBe('plan-model');
+      expect(calls[1].prompt).toContain('File: src/a.ts');
+      expect(calls[1].prompt).toContain(sourceContents);
+      expect(board.get(task.id)?.status).toBe('done');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('converts a repeated tier 2 need_files into a single revision', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      fs.mkdirSync(path.join(fixture.root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(fixture.root, 'src', 'a.ts'), 'export const a = 1;\n');
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        const queued = board.list(argusId, 'in_review');
+        const id = queued[0]?.id ?? '';
+        return opts.label === 'review'
+          ? `{"verdicts":[{"task_id":"${id}","verdict":"need_files","paths":["src/a.ts"]}]}`
+          : `{"verdicts":[{"task_id":"${id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(worktree, { recursive: true });
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1', harness: 'opencode', cwd: worktree, policy: 'child', argusParent: argusId,
+      });
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      await manager.drainReviews(argusId);
+
+      expect(board.get(task.id)?.status).toBe('revising');
+      expect(board.get(task.id)?.attempts).toBe(1);
+      expect(board.list(argusId, 'in_review')).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('records one revision when tier 2 file review is denied by the budget', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        const queued = board.list(argusId, 'in_review');
+        return opts.label === 'review'
+          ? `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"need_files","paths":["src/a.ts"]}]}`
+          : '{}';
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      // Conserve tier disables tier 2 while still draining reviews.
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET budget_max_tokens = 1000 WHERE id = ?')
+        .run(argusId);
+      getDb(fixture.root)
+        .prepare(
+          "INSERT INTO sessions (id, name, harness, project_root, cwd, status, token, policy, argus_parent, started_at, last_activity_at) VALUES ('b1', 'b1', 'claude', ?, ?, 'stopped', 'tok', 'brain', ?, ?, ?)"
+        )
+        .run(fixture.root, fixture.root, argusId, now(), now());
+      getDb(fixture.root)
+        .prepare('INSERT INTO session_telemetry (session_id, input_tokens, output_tokens, updated_at) VALUES (?, ?, ?, ?)')
+        .run('b1', 600, 100, now());
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(worktree, { recursive: true });
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1', harness: 'opencode', cwd: worktree, policy: 'child', argusParent: argusId,
+      });
+      const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+      board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(task.id);
+      board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+
+      await manager.drainReviews(argusId);
+
+      expect(board.get(task.id)?.status).toBe('revising');
+      expect(String(board.get(task.id)?.verdictReason)).toContain('file review was unavailable');
+      expect(board.list(argusId, 'in_review')).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('does not re-review a need_files task forever', async () => {
     const fixture = makeRepo();
     try {
@@ -454,16 +586,20 @@ describe('orchestration', () => {
       const board = new TaskBoard(fixture.root);
       let argusId = '';
       const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
-        if (opts.label !== 'review') return '{}';
-        reviewCalls += 1;
+        if (opts.label === 'review') reviewCalls += 1;
         const queued = board.list(argusId, 'in_review');
         return `{"verdicts":[{"task_id":"${queued[0].id}","verdict":"need_files","paths":["src/a.ts"]}]}`;
       });
       const argus = manager.start({ name: 'fleet' });
       argusId = argus.id;
 
+      const worktree = path.join(fixture.root, 'worktree');
+      fs.mkdirSync(worktree, { recursive: true });
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1', harness: 'opencode', cwd: worktree, policy: 'child', argusParent: argusId,
+      });
       const [task] = board.create(argusId, [{ title: 'a', spec: 'do a', dependsOn: [] }]);
-      board.assign(task.id, 'w1');
+      board.assign(task.id, worker.id);
       board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
       board.beginGating(task.id);
       board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
@@ -471,11 +607,12 @@ describe('orchestration', () => {
       await manager.drainReviews(argusId);
 
       // The task must leave the review queue, or every later pulse re-reviews
-      // it and burns brain tokens on an identical verdict.
+      // it and burns brain tokens on an identical verdict. Tier 2 runs, keeps
+      // requesting the file, and the repeated request becomes one revision.
       expect(board.get(task.id)?.status).toBe('revising');
       expect(board.get(task.id)?.attempts).toBe(1);
       expect(board.list(argusId, 'in_review')).toHaveLength(0);
-      expect(String(board.get(task.id)?.verdictReason)).toContain('src/a.ts');
+      expect(String(board.get(task.id)?.verdictReason)).toContain('files');
 
       // A second drain has nothing queued, so the brain is not called again.
       await manager.drainReviews(argusId);
