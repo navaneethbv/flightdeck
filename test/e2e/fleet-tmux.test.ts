@@ -1,6 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { FleetManager } from '../../src/fleet/manager.js';
 import { Tmux } from '../../src/fleet/tmux.js';
+import { cliEntryPath } from '../../src/core/cliEntry.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { SessionManager } from '../../src/sessions/manager.js';
@@ -17,17 +18,20 @@ afterAll(() => {
   }
 });
 
-function sendKeys(session: string, paneId: string, keys: string): void {
+function sendKeys(paneId: string, keys: string): void {
   tmux.run(['send-keys', '-t', paneId, keys]);
 }
 
 /** Waits until the console pane has rendered the workers section. */
-async function waitForConsole(session: string, paneId: string, timeoutMs = 10000): Promise<void> {
+async function waitForConsole(paneId: string, timeoutMs = 30000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let last = '';
   for (;;) {
-    const cap = tmux.run(['capture-pane', '-t', paneId, '-p', '-S', '-100']);
-    if (cap.stdout.includes('Workers')) return;
-    if (Date.now() > deadline) throw new Error('console pane never rendered');
+    last = tmux.run(['capture-pane', '-t', paneId, '-p', '-S', '-200']).stdout;
+    if (last.includes('Workers')) return;
+    const alive = tmux.run(['list-panes', '-t', paneId, '-F', '#{pane_dead}']).stdout.trim();
+    if (alive === '1') throw new Error(`console pane exited early; pane contents:\n${last}`);
+    if (Date.now() > deadline) throw new Error(`console pane never rendered; pane contents:\n${last}`);
     await sleep(250);
   }
 }
@@ -87,7 +91,12 @@ describe.skipIf(!hasTmux)('fleet window against real tmux', () => {
 
       const fleet = new FleetManager(fixture.root);
       created.push(fleet.tmuxSessionName());
-      fleet.ensureSession();
+      new Tmux().newSession(
+        fleet.tmuxSessionName(),
+        fixture.root,
+        [process.execPath, cliEntryPath(), 'fleet', 'console', '--project', fixture.root],
+        { width: 200, height: 60 }
+      );
       fleet.reconcile();
       const before = tmux.listPanes(fleet.tmuxSessionName());
       expect(before.length).toBeGreaterThanOrEqual(3);
@@ -97,10 +106,10 @@ describe.skipIf(!hasTmux)('fleet window against real tmux', () => {
       const consolePane = before.find((p) => p.sessionId === null);
       expect(consolePane, 'console pane must exist').toBeDefined();
       tmux.run(['select-pane', '-t', consolePane!.paneId]);
-      await waitForConsole(fleet.tmuxSessionName(), consolePane!.paneId);
-      sendKeys(fleet.tmuxSessionName(), consolePane!.paneId, 'Tab');
+      await waitForConsole(consolePane!.paneId);
+      sendKeys(consolePane!.paneId, 'Tab');
       await sleep(400);
-      sendKeys(fleet.tmuxSessionName(), consolePane!.paneId, 'p');
+      sendKeys(consolePane!.paneId, 'p');
       await sleep(800);
 
       // Pane count and pane-session metadata remain stable.

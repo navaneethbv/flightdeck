@@ -44,8 +44,9 @@ export class Tmux {
     return this.run(['has-session', '-t', name]).status === 0;
   }
 
-  newSession(name: string, cwd: string, command: string[]): void {
-    this.run(['new-session', '-d', '-s', name, '-c', cwd, '--', ...command]);
+  newSession(name: string, cwd: string, command: string[], size?: { width: number; height: number }): void {
+    const sizeFlags = size ? ['-x', String(size.width), '-y', String(size.height)] : [];
+    this.run(['new-session', '-d', '-s', name, '-c', cwd, ...sizeFlags, '--', ...command]);
   }
 
   /** Returns the new pane's id, for example `%7`. */
