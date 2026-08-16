@@ -16,7 +16,9 @@ export interface PaneInfo {
 }
 
 export const defaultRunner: TmuxRunner = (args) => {
-  const result = spawnSync('tmux', args, { encoding: 'utf8' });
+  // tmux is resolved through PATH by convention, and argv here is built from
+  // fixed code, never from user input, so this is not attacker-controlled.
+  const result = spawnSync('tmux', args, { encoding: 'utf8' }); // NOSONAR: S4036
   return {
     status: result.status ?? 127,
     stdout: result.stdout ?? '',
@@ -85,7 +87,9 @@ export class Tmux {
         const [paneId, sessionId, title] = line.split('\t');
         return {
           paneId,
-          sessionId: sessionId ? sessionId : null,
+          // An empty tag (the console pane) must become null, not '', or the
+          // reconciler would treat the console pane as a tracked worker.
+          sessionId: sessionId || null,
           title: title ?? '',
         };
       });

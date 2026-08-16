@@ -48,7 +48,11 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
           tier = budget.tier;
           progress = new TablesStore(projectRoot)
             .query('argus_progress', { where: { argus_id: argus.id }, limit: 8 })
-            .map((r) => `${String(r.event)} ${String(r.detail ?? '')}`);
+            .map((r) => {
+              const event = typeof r.event === 'string' ? r.event : '';
+              const detail = typeof r.detail === 'string' ? r.detail : '';
+              return `${event} ${detail}`;
+            });
         }
         setSnap((prev) => ({
           sessions: fleet.fleetSessions(),
@@ -286,7 +290,9 @@ export function registerFleet(program: Command): void {
         // Inside an existing tmux client, switch rather than attach; attaching
         // would refuse to nest and error out.
         const insideTmux = Boolean(process.env.TMUX);
-        const result = spawnSync('tmux', manager.attachArgs(insideTmux), { stdio: 'inherit' });
+        // tmux is resolved through PATH by convention, and attachArgs is fixed
+        // code, so this is not attacker-controlled input.
+        const result = spawnSync('tmux', manager.attachArgs(insideTmux), { stdio: 'inherit' }); // NOSONAR: S4036
         process.exitCode = result.status ?? 0;
       } catch (err) {
         handleError(err);

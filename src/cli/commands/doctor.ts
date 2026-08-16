@@ -14,7 +14,9 @@ type Opts = Record<string, string | boolean | undefined>;
  * tmux is reported as not usable rather than silently downgraded.
  */
 function tmuxCheck(): { name: string; ok: boolean; detail: string } {
-  const result = spawnSync('tmux', ['-V'], { encoding: 'utf8' });
+  // tmux is resolved through PATH by convention, and the argv is fixed, so
+  // this is not attacker-controlled input.
+  const result = spawnSync('tmux', ['-V'], { encoding: 'utf8' }); // NOSONAR: S4036
   if (result.status !== 0 || !result.stdout) {
     return { name: 'tmux', ok: false, detail: 'not installed (only `deck fleet` needs it)' };
   }
