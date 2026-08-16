@@ -37,42 +37,70 @@ export const AnswerSchema = z.object({
 });
 
 /**
+ * Scans for a balanced JSON object starting at `start`, returning the index of
+ * the closing brace, or -1 if no balanced object is found.
+ */
+function balancedObjectEnd(stdout: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let j = start; j < stdout.length; j++) {
+    const ch = stdout[j];
+    if (ch === '\\') {
+      // Skip the escaped character so a \" or \\ inside a string is not
+      // mistaken for structure.
+      j++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') {
+      depth++;
+      continue;
+    }
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Collects every balanced JSON object in the stream, outermost first. Scanning
+ * resumes just past each found object, so a nested object is never treated as
+ * a candidate of its own.
+ */
+function collectJsonCandidates(stdout: string): string[] {
+  const candidates: string[] = [];
+  let i = 0;
+  while (i < stdout.length) {
+    if (stdout[i] !== '{') {
+      i++;
+      continue;
+    }
+    const end = balancedObjectEnd(stdout, i);
+    if (end === -1) {
+      i++;
+      continue;
+    }
+    candidates.push(stdout.slice(i, end + 1));
+    i = end + 1;
+  }
+  return candidates;
+}
+
+/**
  * Harnesses wrap their output in prose or code fences even when told not to,
  * so the last balanced JSON object in the stream is taken as the answer. The
  * last one wins because a model that corrects itself puts the correction
  * after the draft.
  */
 export function extractJson(stdout: string): unknown {
-  const candidates: string[] = [];
-  for (let i = 0; i < stdout.length; i++) {
-    if (stdout[i] !== '{') continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let j = i; j < stdout.length; j++) {
-      const ch = stdout[j];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') inString = !inString;
-      if (inString) continue;
-      if (ch === '{') depth++;
-      if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          candidates.push(stdout.slice(i, j + 1));
-          i = j;
-          break;
-        }
-      }
-    }
-  }
-  for (const candidate of candidates.reverse()) {
+  const candidates = collectJsonCandidates(stdout);
+  for (const candidate of candidates.toReversed()) {
     try {
       return JSON.parse(candidate);
     } catch {

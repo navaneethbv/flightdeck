@@ -33,7 +33,7 @@ function runOne(cwd: string, command: string): { code: number | null; output: st
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   // A timeout or spawn failure yields a null status; treat it as a gate failure
   // rather than a pass, so unverifiable work never reaches the brain.
-  const code = result.status === null ? 1 : result.status;
+  const code = result.status ?? 1;
   return { code, output };
 }
 
@@ -62,7 +62,9 @@ export function runGates(worktreePath: string, cmds: GateCommands): GateResult {
  * brain sees instead of the diff itself at tier 1.
  */
 export function computeDiffstat(worktreePath: string): string {
-  const result = spawnSync('git', ['diff', '--stat', 'HEAD'], {
+  // git is resolved through PATH by convention across this repo, and the
+  // argv here is fixed, so this is not attacker-controlled input.
+  const result = spawnSync('git', ['diff', '--stat', 'HEAD'], { // NOSONAR: S4036
     cwd: worktreePath,
     encoding: 'utf8',
   });
