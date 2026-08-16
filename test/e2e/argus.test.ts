@@ -1,38 +1,70 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { NotesStore } from '../../src/notes/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
-import { ArgusManager, parseTasks } from '../../src/argus/manager.js';
+import { ArgusManager } from '../../src/argus/manager.js';
+import { TaskBoard } from '../../src/argus/board.js';
+import { getDb } from '../../src/core/state.js';
 import { makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
 
-describe('Argus', () => {
-  it('parses tasks from a mission note', () => {
-    expect(parseTasks('- fix the bug\n- ship the feature\n')).toEqual(['fix the bug', 'ship the feature']);
-    expect(parseTasks('single task text')).toEqual(['single task text']);
-    expect(parseTasks('')).toEqual([]);
-  });
+/** A fake brain that returns a fixed plan, so no model is ever invoked. */
+function fakeBrain(planJson: string) {
+  return async (_root: string, _argusId: string, opts: { label: string }): Promise<string> =>
+    opts.label === 'plan' ? planJson : '{}';
+}
 
-  it('spawns children and records progress on pulse', async () => {
+/**
+ * A binDir with a claude that plans via JSON and an opencode that just echoes,
+ * so a real CLI fleet loop stays hermetic: the brain call returns board rows
+ * and the spawned workers are inert.
+ */
+function makeFleetHarness(): { binDir: string; cleanup(): void } {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+  const claude =
+    "#!/bin/bash\necho '{\"tasks\":[{\"title\":\"task one\",\"spec\":\"do task one\",\"depends_on\":[]},{\"title\":\"task two\",\"spec\":\"do task two\",\"depends_on\":[]}]}'\nexit 0\n";
+  fs.writeFileSync(path.join(binDir, 'claude'), claude, { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\necho "fake opencode ran with: $@"\nexit 0\n', { mode: 0o755 });
+  return { binDir, cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }) };
+}
+
+describe('Argus', () => {
+  it('turns a mission into board rows and spawns workers on pulse', async () => {
     const fixture = makeRepo();
     const fake = makeFakeHarness('claude');
     const oldPath = process.env.PATH;
     process.env.PATH = `${fake.binDir}:${oldPath ?? ''}`;
     try {
+      const brain = fakeBrain(
+        '{"tasks":[{"title":"login","spec":"add login","depends_on":[]},{"title":"tests","spec":"test login","depends_on":[]}]}'
+      );
       const notes = new NotesStore(fixture.root);
       const mission = notes.createNote('mission', '- implement the login endpoint\n- write tests\n- update the README');
-      const manager = new ArgusManager(fixture.root);
+      const manager = new ArgusManager(fixture.root, brain);
       const argus = manager.start({ name: 'e2e', missionNoteId: mission.id, childLimit: 2, pulseSec: 1 });
+      // Dispatch reads worker_harnesses; pin it to the fake claude so no real
+      // opencode process is spawned.
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET worker_harnesses = ? WHERE id = ?')
+        .run('["claude"]', argus.id);
 
       await manager.pulse(argus.id);
+
+      const board = new TaskBoard(fixture.root);
+      const tasks = board.list(argus.id);
+      expect(tasks).toHaveLength(2);
+      expect(tasks[0].status).toBe('assigned');
+
       const fleet = manager.fleet(argus.id);
       expect(fleet.children.length).toBeGreaterThanOrEqual(1);
       expect(fleet.recentProgress.length).toBeGreaterThan(0);
 
       await manager.pulse(argus.id);
-      const fleet2 = manager.fleet(argus.id);
-      expect(fleet2.children.length).toBeLessThanOrEqual(2);
+      expect(new TaskBoard(fixture.root).list(argus.id)).toHaveLength(2);
 
       const sessions = new SessionManager(fixture.root).list();
-      for (const child of fleet2.children) {
+      for (const child of manager.fleet(argus.id).children) {
         const s = child.session!;
         expect(sessions.find((x) => x.id === s.id)?.policy).toBe('child');
       }
@@ -45,7 +77,7 @@ describe('Argus', () => {
 
   it('runs the full argus start loop and stops gracefully', async () => {
     const fixture = makeRepo();
-    const fake = makeFakeHarness('claude');
+    const fake = makeFleetHarness();
     const notes = new NotesStore(fixture.root);
     const mission = notes.createNote('mission', '- task one\n- task two');
     try {
@@ -62,8 +94,14 @@ describe('Argus', () => {
       const argus = manager.list().find((a) => a.name === 'e2e-loop');
       expect(argus).toBeDefined();
       expect(argus!.status).toBe('running');
+      // The fake claude brain plans the mission into board rows; the loop then
+      // dispatches workers against them.
+      expect(new TaskBoard(fixture.root).list(argus!.id)).toHaveLength(2);
       const fleet = manager.fleet(argus!.id);
       expect(fleet.children.length).toBeGreaterThanOrEqual(1);
+      expect(fleet.recentProgress.map((p) => String(p.event))).toEqual(
+        expect.arrayContaining(['planned', 'worker_spawned'])
+      );
 
       child.kill('SIGTERM');
       const code = await new Promise<number | null>((resolve) => child.on('close', (c) => resolve(c)));
