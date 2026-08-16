@@ -25,6 +25,16 @@ export interface BudgetState {
    */
   questionsAllowed: boolean;
   windowStart: number;
+  /** Number of tasks sitting in the review queue right now. */
+  reviewQueueDepth: number;
+  /** Age in seconds of the oldest queued task, or null when the queue is empty. */
+  oldestReviewAgeSec: number | null;
+  /**
+   * Wall-clock time when the oldest in-window brain session rolls out of the
+   * window, or null when no in-window usage exists. A rolling window never
+   * resets all at once, so this is a projection, not a full-budget reset.
+   */
+  nextResetAt: number | null;
 }
 
 export function classifyTier(fraction: number): BudgetTier {
@@ -45,6 +55,30 @@ export function tierPolicy(tier: BudgetTier): TierPolicy {
     case 'paused':
       return { tier2Allowed: false, batchSize: 0, reviewsAllowed: false };
   }
+}
+
+/**
+ * Decides how many queued tasks one brain review call should cover.
+ *
+ * A forced review may ignore the batching and the 95 percent pause but never
+ * the ceiling, so the budget that protects the rate limit cannot be silently
+ * exceeded by a human override.
+ */
+export function reviewBatchSize(
+  budget: BudgetState,
+  queuedCount: number,
+  oldestAgeMs: number,
+  force: boolean
+): number {
+  if (force) {
+    if (budget.spent >= budget.ceiling) throw new Error('brain budget exhausted for this window');
+    return queuedCount;
+  }
+  if (!budget.policy.reviewsAllowed) return 0;
+  if (budget.tier === 'normal') return Math.min(1, queuedCount);
+  if (budget.tier === 'conserve') return Math.min(4, queuedCount);
+  if (queuedCount >= 4 || oldestAgeMs >= 30 * 60_000) return queuedCount;
+  return 0;
 }
 
 export function budgetState(projectRoot: string, argusId: string): BudgetState {
@@ -71,6 +105,16 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
     )
     .get(...([argusId, windowStart] as SQLInputValue[])) as { spent: number };
 
+  const oldest = db
+    .prepare(
+      'SELECT MIN(started_at) AS started FROM sessions WHERE policy = ? AND argus_parent = ? AND started_at > ?'
+    )
+    .get(...(['brain', argusId, windowStart] as SQLInputValue[])) as { started: number | null };
+
+  const queued = db
+    .prepare('SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM tasks WHERE argus_id = ? AND status = ?')
+    .get(...([argusId, 'in_review'] as SQLInputValue[])) as { n: number; oldest: number | null };
+
   const spent = Number(row.spent);
   const fraction = ceiling > 0 ? spent / ceiling : 1;
   const tier = classifyTier(fraction);
@@ -82,5 +126,8 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
     policy: tierPolicy(tier),
     questionsAllowed: spent < ceiling,
     windowStart,
+    reviewQueueDepth: Number(queued.n),
+    oldestReviewAgeSec: queued.oldest === null ? null : Math.max(0, (now() - queued.oldest) / 1000),
+    nextResetAt: oldest.started === null ? null : oldest.started + Number(argus.budget_window_sec) * 1000,
   };
 }

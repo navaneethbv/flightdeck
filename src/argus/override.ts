@@ -3,7 +3,6 @@ import { getDb, now } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
 import { TablesStore } from '../tables/store.js';
 import { TaskBoard } from './board.js';
-import { budgetState } from './budget.js';
 import { log } from '../core/logger.js';
 
 /**
@@ -70,16 +69,12 @@ export class Override {
   /**
    * Drains the review queue now, ignoring the ladder's batching but NOT the
    * ceiling. A human asking for a review must not be able to silently exceed
-   * the budget that protects the rate limit.
+   * the budget that protects the rate limit. The ceiling check lives in the
+   * manager's `drainReviews({ force: true })` path so the CLI, console, and
+   * pulse share one boundary.
    */
-  async forceReview(argusId: string, manager: { drainReviews: (id: string) => Promise<void> }): Promise<void> {
-    const budget = budgetState(this.projectRoot, argusId);
-    if (budget.spent >= budget.ceiling) {
-      throw new Error(
-        `brain budget exhausted for this window (${budget.spent}/${budget.ceiling} tokens); review cannot be forced`
-      );
-    }
-    this.record(argusId, 'human_force_review', `spend=${budget.spent}/${budget.ceiling}`);
-    await manager.drainReviews(argusId);
+  async forceReview(argusId: string, manager: { drainReviews: (id: string, opts?: { force?: boolean }) => Promise<void> }): Promise<void> {
+    this.record(argusId, 'human_force_review', 'forcing the review queue now');
+    await manager.drainReviews(argusId, { force: true });
   }
 }

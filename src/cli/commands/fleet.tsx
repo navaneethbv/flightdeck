@@ -18,13 +18,16 @@ interface ConsoleSnapshot {
   spent: number;
   ceiling: number;
   tier: string;
+  reviewQueueDepth: number;
+  nextBudgetResetAt: number | null;
   progress: string[];
   tick: number;
 }
 
 function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
   const [snap, setSnap] = useState<ConsoleSnapshot>({
-    sessions: [], argusId: null, counts: {}, spent: 0, ceiling: 0, tier: 'normal', progress: [], tick: 0,
+    sessions: [], argusId: null, counts: {}, spent: 0, ceiling: 0, tier: 'normal',
+    reviewQueueDepth: 0, nextBudgetResetAt: null, progress: [], tick: 0,
   });
 
   useEffect(() => {
@@ -37,6 +40,8 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
         let spent = 0;
         let ceiling = 0;
         let tier = 'normal';
+        let reviewQueueDepth = 0;
+        let nextBudgetResetAt: number | null = null;
         let progress: string[] = [];
         if (argus) {
           for (const task of new TaskBoard(projectRoot).list(argus.id)) {
@@ -46,6 +51,8 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
           spent = budget.spent;
           ceiling = budget.ceiling;
           tier = budget.tier;
+          reviewQueueDepth = budget.reviewQueueDepth;
+          nextBudgetResetAt = budget.nextResetAt;
           progress = new TablesStore(projectRoot)
             .query('argus_progress', { where: { argus_id: argus.id }, limit: 8 })
             .map((r) => {
@@ -57,7 +64,7 @@ function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
         setSnap((prev) => ({
           sessions: fleet.fleetSessions(),
           argusId: argus?.id ?? null,
-          counts, spent, ceiling, tier, progress,
+          counts, spent, ceiling, tier, reviewQueueDepth, nextBudgetResetAt, progress,
           tick: prev.tick + 1,
         }));
       } catch {
@@ -115,6 +122,10 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
       <Box marginBottom={1}>
         <Text>{`  ${spendLabel}  `}</Text>
         <Text color={snap.tier === 'paused' ? 'red' : 'green'}>{snap.tier}</Text>
+        <Text>{`  queued=${snap.reviewQueueDepth}`}</Text>
+        {snap.nextBudgetResetAt !== null && (
+          <Text>{`  next reset ${new Date(snap.nextBudgetResetAt).toLocaleTimeString()}`}</Text>
+        )}
       </Box>
 
       <Text bold underline>Workers</Text>

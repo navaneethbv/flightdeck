@@ -9,7 +9,7 @@ import { createWorktree } from '../worktrees/manager.js';
 import { log } from '../core/logger.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { TaskBoard } from './board.js';
-import { budgetState } from './budget.js';
+import { budgetState, reviewBatchSize } from './budget.js';
 import { runGates, computeDiffstat, gateCommandsFromConfig, type GateCommands } from './gates.js';
 import { QuestionQueue } from './questions.js';
 import { invokeBrain, parsePlan, parseReview, parseAnswer, type BrainInvocation } from './brain.js';
@@ -510,16 +510,24 @@ export class ArgusManager {
   }
 
   /** Drains the review queue in batches sized by the budget ladder. */
-  async drainReviews(id: string): Promise<void> {
+  async drainReviews(id: string, opts: { force?: boolean } = {}): Promise<void> {
+    const force = opts.force === true;
     const budget = budgetState(this.projectRoot, id);
-    if (!budget.policy.reviewsAllowed) {
+    const queued = this.board.list(id, 'in_review');
+    if (queued.length === 0) return;
+    if (!budget.policy.reviewsAllowed && !force) {
       this.writeProgress(id, null, 'review_paused', `spend=${budget.spent}/${budget.ceiling}`);
       return;
     }
-    const queued = this.board.list(id, 'in_review');
-    if (queued.length === 0) return;
 
-    const batch = queued.slice(0, Math.min(queued.length, budget.policy.batchSize));
+    const oldest = Math.min(...queued.map((t) => t.createdAt));
+    const batchSize = reviewBatchSize(budget, queued.length, now() - oldest, force);
+    if (batchSize === 0) {
+      this.writeProgress(id, null, 'review_batched', `queued=${queued.length} oldest=${Math.round((now() - oldest) / 1000)}s`);
+      return;
+    }
+
+    const batch = queued.slice(0, batchSize);
     const row = this.db
       .prepare('SELECT brain_review_model FROM argus WHERE id = ?')
       .get(id) as { brain_review_model?: string };

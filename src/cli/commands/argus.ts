@@ -233,6 +233,10 @@ export function registerArgus(program: Command): void {
         console.log(`tier    ${state.tier}`);
         console.log(`reviews ${state.policy.reviewsAllowed ? 'draining' : 'paused'}`);
         console.log(`tier 2  ${state.policy.tier2Allowed ? 'allowed' : 'disabled'}`);
+        console.log(`queued  ${state.reviewQueueDepth}`);
+        if (state.nextResetAt !== null) {
+          console.log(`next reset ${new Date(state.nextResetAt).toISOString()}`);
+        }
       } catch (err) {
         handleError(err);
       }

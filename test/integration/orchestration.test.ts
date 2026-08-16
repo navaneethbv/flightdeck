@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ArgusManager } from '../../src/argus/manager.js';
+import { Override } from '../../src/argus/override.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { QuestionQueue } from '../../src/argus/questions.js';
 import { NotesStore } from '../../src/notes/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
-import { getDb } from '../../src/core/state.js';
+import { getDb, now } from '../../src/core/state.js';
 import { makeRepo, spawnCli, sleep } from '../helpers.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
@@ -221,6 +222,91 @@ describe('orchestration', () => {
 
       expect(board.get(task.id)?.status).toBe('blocked');
       expect(String(board.get(task.id)?.verdictReason)).toContain('exhausted 2 attempts');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('batches all eight queued tasks in one forced review call below the ceiling', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const ids: string[] = [];
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) => {
+        if (opts.label !== 'review') return '{}';
+        const body = opts.prompt ?? '';
+        for (const id of ids) {
+          expect(body).toContain(id);
+        }
+        return `{"verdicts":[${ids.map((id) => `{"task_id":"${id}","verdict":"accept"}`).join(',')}]}`;
+      });
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET budget_max_tokens = 1000 WHERE id = ?')
+        .run(argusId);
+      for (let i = 0; i < 8; i++) {
+        const [t] = board.create(argusId, [{ title: `t${i}`, spec: 's', dependsOn: [] }]);
+        ids.push(t.id);
+        board.assign(t.id, `w${i}`);
+        board.report(t.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+        board.beginGating(t.id);
+        board.recordGates(t.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+      }
+      // 96 percent of the ceiling: normal drain must pause, force must drain.
+      const db = getDb(fixture.root);
+      for (const id of ids) {
+        db.prepare(
+          "INSERT INTO sessions (id, name, harness, project_root, cwd, status, token, policy, argus_parent, started_at, last_activity_at) VALUES (?, ?, 'claude', ?, ?, 'stopped', 'tok', 'brain', ?, ?, ?)"
+        ).run(`b-${id}`, `b-${id}`, fixture.root, fixture.root, argusId, now(), now());
+        db.prepare(
+          'INSERT INTO session_telemetry (session_id, input_tokens, output_tokens, updated_at) VALUES (?, ?, ?, ?)'
+        ).run(`b-${id}`, 60, 60, now());
+      }
+
+      await manager.drainReviews(argusId);
+      expect(board.list(argusId, 'done')).toHaveLength(0);
+
+      const override = new Override(fixture.root);
+      await override.forceReview(argusId, manager);
+      expect(board.list(argusId, 'done')).toHaveLength(8);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('refuses a forced review at 100 percent of the ceiling', async () => {
+    const fixture = makeRepo();
+    try {
+      const board = new TaskBoard(fixture.root);
+      let argusId = '';
+      const manager = new ArgusManager(fixture.root, async (_r, _a, opts) =>
+        opts.label === 'review' ? '{"verdicts":[]}' : '{}'
+      );
+      const argus = manager.start({ name: 'fleet' });
+      argusId = argus.id;
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET budget_max_tokens = 1000 WHERE id = ?')
+        .run(argusId);
+      const [t] = board.create(argusId, [{ title: 't', spec: 's', dependsOn: [] }]);
+      board.assign(t.id, 'w0');
+      board.report(t.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
+      board.beginGating(t.id);
+      board.recordGates(t.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
+      getDb(fixture.root)
+        .prepare(
+          "INSERT INTO sessions (id, name, harness, project_root, cwd, status, token, policy, argus_parent, started_at, last_activity_at) VALUES ('b1', 'b1', 'claude', ?, ?, 'stopped', 'tok', 'brain', ?, ?, ?)"
+        )
+        .run(fixture.root, fixture.root, argusId, now(), now());
+      getDb(fixture.root)
+        .prepare(
+          'INSERT INTO session_telemetry (session_id, input_tokens, output_tokens, updated_at) VALUES (?, ?, ?, ?)'
+        )
+        .run('b1', 600, 400, now());
+
+      await expect(new Override(fixture.root).forceReview(argusId, manager)).rejects.toThrow(/exhausted/);
+      expect(board.get(t.id)?.status).toBe('in_review');
     } finally {
       fixture.cleanup();
     }

@@ -1,7 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTier, tierPolicy, budgetState } from '../../src/argus/budget.js';
+import {
+  classifyTier,
+  tierPolicy,
+  budgetState,
+  reviewBatchSize,
+  type BudgetState,
+  type BudgetTier,
+} from '../../src/argus/budget.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo } from '../helpers.js';
+
+function fixtureBudget(tier: BudgetTier, spent: number, ceiling: number): BudgetState {
+  return {
+    spent,
+    ceiling,
+    fraction: ceiling > 0 ? spent / ceiling : 1,
+    tier,
+    policy: tierPolicy(tier),
+    questionsAllowed: spent < ceiling,
+    windowStart: now() - 3600 * 1000,
+    reviewQueueDepth: 0,
+    oldestReviewAgeSec: null,
+    nextResetAt: null,
+  };
+}
 
 describe('classifyTier', () => {
   it('maps each ladder boundary to the correct tier', () => {
@@ -94,5 +116,24 @@ describe('budgetState', () => {
     } finally {
       fixture.cleanup();
     }
+  });
+});
+
+describe('reviewBatchSize', () => {
+  it('decides the drain batch from tier, queue age, and force', () => {
+    const normal = fixtureBudget('normal', 0, 1_000_000);
+    const conserve = fixtureBudget('conserve', 700_000, 1_000_000);
+    const batch = fixtureBudget('batch', 850_000, 1_000_000);
+    const pausedBelowCeiling = fixtureBudget('paused', 960_000, 1_000_000);
+    const atCeiling = fixtureBudget('paused', 1_000_000, 1_000_000);
+
+    expect(reviewBatchSize(normal, 1, 0, false)).toBe(1);
+    expect(reviewBatchSize(conserve, 7, 0, false)).toBe(4);
+    expect(reviewBatchSize(batch, 3, 31 * 60_000, false)).toBe(3);
+    expect(reviewBatchSize(batch, 3, 29 * 60_000, false)).toBe(0);
+    expect(reviewBatchSize(batch, 4, 1_000, false)).toBe(4);
+    expect(reviewBatchSize(pausedBelowCeiling, 8, 1_000, false)).toBe(0);
+    expect(reviewBatchSize(pausedBelowCeiling, 8, 1_000, true)).toBe(8);
+    expect(() => reviewBatchSize(atCeiling, 8, 1_000, true)).toThrow(/exhausted/);
   });
 });
