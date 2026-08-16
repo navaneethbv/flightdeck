@@ -83,6 +83,10 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
     }
   });
 
+  const countsLabel = Object.entries(snap.counts)
+    .map(([status, count]) => `${status}=${count}`)
+    .join('  ');
+
   // A claimed session reports no parseable usage, so its spend renders blank
   // rather than zero. Zero would be fabricated data.
   const spendLabel = snap.ceiling > 0
@@ -98,9 +102,9 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
 
       <Text bold underline>Board</Text>
       <Box marginBottom={1}>
-        {Object.keys(snap.counts).length === 0
+        {countsLabel === ''
           ? <Text dimColor>{'  (no tasks)'}</Text>
-          : <Text>{`  ${Object.entries(snap.counts).map(([k, v]) => `${k}=${v}`).join('  ')}`}</Text>}
+          : <Text>{`  ${countsLabel}`}</Text>}
       </Box>
 
       <Text bold underline>Brain budget</Text>
@@ -177,6 +181,10 @@ export function registerFleet(program: Command): void {
         }
         console.log(`tmux        ${payload.tmux ? 'available' : 'not installed'}`);
         console.log(`session     ${payload.tmuxSession}`);
+        if (payload.sessions.length === 0) {
+          console.log('(no sessions)');
+          return;
+        }
         for (const s of payload.sessions) {
           const claimed = s.claimedAt !== null ? '  CLAIMED' : '';
           console.log(`${s.status.padEnd(9)} ${s.name.padEnd(20)} ${s.harness}${claimed}`);
