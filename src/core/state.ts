@@ -134,16 +134,66 @@ function migrate(db: DatabaseSync): void {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      argus_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      spec TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      assignee_session TEXT,
+      depends_on TEXT NOT NULL DEFAULT '[]',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      worker_report TEXT,
+      gate_result TEXT,
+      diffstat TEXT,
+      verdict TEXT,
+      verdict_reason TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      argus_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT,
+      faq_key TEXT,
+      created_at INTEGER NOT NULL,
+      answered_at INTEGER
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_root);
     CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_session);
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_session);
     CREATE INDEX IF NOT EXISTS idx_argus_project ON argus(project_root);
     CREATE INDEX IF NOT EXISTS idx_cache_kind ON integration_cache(kind);
+    CREATE INDEX IF NOT EXISTS idx_tasks_argus ON tasks(argus_id, status);
+    CREATE INDEX IF NOT EXISTS idx_questions_argus ON questions(argus_id, answered_at);
   `);
   try {
     db.exec('ALTER TABLE sessions ADD COLUMN task TEXT;');
   } catch {
     // column already exists
+  }
+  const argusColumns = [
+    "brain_harness TEXT NOT NULL DEFAULT 'claude'",
+    'brain_plan_model TEXT',
+    'brain_review_model TEXT',
+    `worker_harnesses TEXT NOT NULL DEFAULT '["opencode"]'`,
+    'budget_window_sec INTEGER NOT NULL DEFAULT 18000',
+    'budget_max_tokens INTEGER NOT NULL DEFAULT 1000000',
+    'budget_count_cache_reads INTEGER NOT NULL DEFAULT 1',
+    'max_attempts_per_task INTEGER NOT NULL DEFAULT 3',
+    'max_tasks INTEGER NOT NULL DEFAULT 100',
+    'question_timeout_sec INTEGER NOT NULL DEFAULT 120',
+  ];
+  for (const col of argusColumns) {
+    try {
+      db.exec(`ALTER TABLE argus ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
   }
 }
 

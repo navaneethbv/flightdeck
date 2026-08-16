@@ -7,6 +7,10 @@ export interface ArgusConfig {
   defaultPulseSec: number;
   defaultChildLimit: number;
   allowedLimits: number[];
+  /** Shell command run as the tier 0 test gate. Empty string skips the gate. */
+  gateTestCommand: string;
+  /** Shell command run as the tier 0 lint gate. Empty string skips the gate. */
+  gateLintCommand: string;
 }
 
 /**
@@ -36,6 +40,8 @@ const DEFAULTS: GlobalConfig = {
     defaultPulseSec: 60,
     defaultChildLimit: 8,
     allowedLimits: [2, 4, 8, 16],
+    gateTestCommand: 'npm test',
+    gateLintCommand: 'npm run lint',
   },
   models: {
     'claude-opus-5': { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
