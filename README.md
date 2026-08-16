@@ -109,6 +109,17 @@ deck argus init vector-search --template feature --title "Implement Vector Searc
 
 # Start the Argus fleet manager loop in the foreground
 deck argus start --name vector-search --mission vector-search-mission --pulse 30s --children 4
+
+# Select a Codex brain with an OpenCode worker, budget, and models
+deck argus start \
+  --name codex-opencode \
+  --mission <note-id> \
+  --brain-harness codex \
+  --brain-plan-model gpt-5.6-sol \
+  --brain-review-model gpt-5.6-terra \
+  --worker-harness opencode \
+  --budget-window 2h \
+  --budget-max-tokens 250000
 ```
 
 ---
@@ -136,7 +147,7 @@ deck argus start --name vector-search --mission vector-search-mission --pulse 30
 | Command | Description |
 | :--- | :--- |
 | `deck argus init <name> [options]` | Scaffold a Mission note (`--template <feature\|refactor\|audit\|bugfix>`, `--title <title>`) |
-| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`) |
+| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`) |
 | `deck argus status [id] [--json]` | View fleet hierarchy, active children, and pulse progress |
 | `deck argus stop <id>` | Stop an Argus fleet and terminate all child subagents |
 
