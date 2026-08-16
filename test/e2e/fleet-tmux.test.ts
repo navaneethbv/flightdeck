@@ -22,8 +22,22 @@ function sendKeys(paneId: string, keys: string): void {
   tmux.run(['send-keys', '-t', paneId, keys]);
 }
 
+/** Whether the OS process behind a pane is still running. Distinguishes a
+ * genuinely stuck-but-alive process (slow CI cold start) from one that has
+ * exited without tmux yet reflecting it. */
+function paneProcessAlive(paneId: string): boolean {
+  const pid = tmux.run(['display-message', '-p', '-t', paneId, '#{pane_pid}']).stdout.trim();
+  if (!pid) return false;
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Waits until the console pane has rendered the workers section. */
-async function waitForConsole(paneId: string, timeoutMs = 30000): Promise<void> {
+async function waitForConsole(paneId: string, timeoutMs = 45000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = '';
   for (;;) {
@@ -31,7 +45,12 @@ async function waitForConsole(paneId: string, timeoutMs = 30000): Promise<void> 
     if (last.includes('Workers')) return;
     const alive = tmux.run(['list-panes', '-t', paneId, '-F', '#{pane_dead}']).stdout.trim();
     if (alive === '1') throw new Error(`console pane exited early; pane contents:\n${last}`);
-    if (Date.now() > deadline) throw new Error(`console pane never rendered; pane contents:\n${last}`);
+    if (Date.now() > deadline) {
+      const processAlive = paneProcessAlive(paneId);
+      throw new Error(
+        `console pane never rendered (pane process alive: ${processAlive}); pane contents:\n${last}`
+      );
+    }
     await sleep(250);
   }
 }

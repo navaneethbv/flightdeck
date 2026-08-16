@@ -102,10 +102,15 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
 }
 
 function useConsoleSnapshot(projectRoot: string): ConsoleSnapshot {
-  const [snap, setSnap] = useState<ConsoleSnapshot>({
+  // Lazy initializer: React only calls this on the first render. Passing the
+  // computed object directly would call loadSnapshot() (which runs several
+  // blocking tmux subprocess calls plus DB queries) on every re-render,
+  // including one on every keystroke, which both wastes CPU and delays the
+  // very first paint behind synchronous I/O.
+  const [snap, setSnap] = useState<ConsoleSnapshot>(() => ({
     ...loadSnapshot(projectRoot),
     tick: 0,
-  });
+  }));
 
   useEffect(() => {
     const load = (): void => {
