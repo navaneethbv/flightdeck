@@ -483,6 +483,7 @@ describe('Dashboard data integrity (E2E)', () => {
   it('serves a fixture project and renders exactly its real sessions', async () => {
     const fixture = makeRepo();
     const fake = makeFakeHarness('claude');
+    fs.writeFileSync(path.join(fake.binDir, 'opencode'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
     const oldPath = process.env.PATH;
     process.env.PATH = `${fake.binDir}:${oldPath ?? ''}`;
     const server = createWebServer({ port: 0, projectRoot: fixture.root });
@@ -492,14 +493,12 @@ describe('Dashboard data integrity (E2E)', () => {
       // dashboard has genuine entities to render.
       const notes = new NotesStore(fixture.root);
       const mission = notes.createNote('e2e mission', '- implement the login endpoint\n- write the tests');
-      const manager = new ArgusManager(fixture.root);
+      const brain = async (_r: string, _a: string, opts: { label: string }): Promise<string> =>
+        opts.label === 'plan'
+          ? '{"tasks":[{"title":"login","spec":"add login","depends_on":[]},{"title":"tests","spec":"test login","depends_on":[]}]}'
+          : '{}';
+      const manager = new ArgusManager(fixture.root, brain);
       const argus = manager.start({ name: 'e2e-dashboard', missionNoteId: mission.id, childLimit: 2, pulseSec: 1 });
-      // Dispatch reads worker_harnesses; pin it to the fake claude so no real
-      // opencode process is spawned and then orphaned when the fixture is torn
-      // down.
-      getDb(fixture.root)
-        .prepare('UPDATE argus SET worker_harnesses = ? WHERE id = ?')
-        .run('["claude"]', argus.id);
       await manager.pulse(argus.id);
       const fleet = manager.fleet(argus.id);
       expect(fleet.children.length).toBeGreaterThanOrEqual(1);

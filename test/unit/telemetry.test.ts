@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { SessionManager } from '../../src/sessions/manager.js';
 import {
@@ -368,7 +369,7 @@ describe('progress is only ever a real Argus completion', () => {
 describe('end-to-end: a spawned claude session records telemetry and a readable log', () => {
   it('wires the collector through SessionManager', async () => {
     const fixture = makeRepo();
-    const binDir = fs.mkdtempSync(path.join(import.meta.dirname, '..', '..', 'tmp-bin-'));
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
     const script = `#!/bin/bash
 echo '${CLAUDE_SYSTEM_LINE}'
 echo '${CLAUDE_ASSISTANT_LINE}'

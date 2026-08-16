@@ -6,6 +6,7 @@ import { NotesStore } from '../../src/notes/store.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
+import { TablesStore } from '../../src/tables/store.js';
 import { getDb } from '../../src/core/state.js';
 import { makeRepo, makeFakeHarness, spawnCli } from '../helpers.js';
 
@@ -36,14 +37,14 @@ function makeFleetHarness(): { binDir: string; cleanup(): void } {
   const claude =
     "#!/bin/bash\necho '{\"tasks\":[{\"title\":\"task one\",\"spec\":\"do task one\",\"depends_on\":[]},{\"title\":\"task two\",\"spec\":\"do task two\",\"depends_on\":[]}]}'\nexit 0\n";
   fs.writeFileSync(path.join(binDir, 'claude'), claude, { mode: 0o755 });
-  fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\necho "fake opencode ran with: $@"\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\nwhile true; do sleep 1; done\n', { mode: 0o755 });
   return { binDir, cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }) };
 }
 
 describe('Argus', () => {
   it('turns a mission into board rows and spawns workers on pulse', async () => {
     const fixture = makeRepo();
-    const fake = makeFakeHarness('claude');
+    const fake = makeFleetHarness();
     const oldPath = process.env.PATH;
     process.env.PATH = `${fake.binDir}:${oldPath ?? ''}`;
     try {
@@ -131,6 +132,39 @@ describe('Argus', () => {
       const code = await new Promise<number | null>((resolve) => child.on('close', (c) => resolve(c)));
       expect(code).toBe(0);
       expect(manager.get(argus!.id)!.status).toBe('stopped');
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('stops its worker sessions when the manager is signalled', async () => {
+    const fixture = makeRepo();
+    const fake = makeFleetHarness();
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- task one\n- task two');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'e2e-stop', '--mission', mission.id, '--children', '2', '--pulse', '1s'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+
+      await waitFor(() => {
+        const found = new ArgusManager(fixture.root).list().find((a) => a.name === 'e2e-stop');
+        if (!found || found.status !== 'running') return null;
+        const sessions = new SessionManager(fixture.root).list().filter((s) => s.policy === 'child');
+        if (sessions.length < 2 || !sessions.every((s) => s.status === 'running')) return null;
+        return found;
+      });
+
+      child.kill('SIGTERM');
+      await new Promise((resolve) => child.on('close', resolve));
+
+      const sessions = new SessionManager(fixture.root).list().filter((s) => s.policy === 'child');
+      expect(sessions.length).toBeGreaterThan(0);
+      for (const s of sessions) {
+        expect(s.status, `child ${s.name} was orphaned`).not.toBe('running');
+      }
     } finally {
       fake.cleanup();
       fixture.cleanup();

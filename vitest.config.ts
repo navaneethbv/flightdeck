@@ -6,5 +6,6 @@ export default defineConfig({
     testTimeout: 60000,
     hookTimeout: 60000,
     setupFiles: ['test/setup.ts'],
+    globalSetup: ['./test/global-teardown.ts'],
   },
 });

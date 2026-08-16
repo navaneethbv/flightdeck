@@ -147,6 +147,7 @@ export class ArgusManager {
   private readonly board: TaskBoard;
   private readonly questions: QuestionQueue;
   private readonly brain: BrainFn;
+  private stopping = false;
 
   constructor(projectRoot: string, brain: BrainFn = invokeBrain) {
     this.projectRoot = normalizeProjectRoot(projectRoot);
@@ -277,15 +278,28 @@ export class ArgusManager {
       log.warn(`argus ${id}: no objective gates configured; work will go directly to brain review`);
     }
 
+    this.stopping = false;
+    let stopping = false;
     const stop = (): void => {
-      this.db.prepare("UPDATE argus SET status = 'stopped', last_pulse_at = ? WHERE id = ?").run(now(), id);
-      if (argus.managerSessionId) {
-        this.db
-          .prepare("UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?")
-          .run(now(), now(), argus.managerSessionId);
-      }
-      this.writeProgress(id, null, 'argus_stopped', '');
-      process.exit(0);
+      if (stopping) return; // a second signal must not race the first shutdown
+      stopping = true;
+      this.stopping = true;
+      void (async () => {
+        try {
+          // Stops every child session this fleet spawned. Without it, SIGTERM to
+          // the manager leaves autonomous agents running with no supervisor.
+          await this.stop(id);
+        } catch (err) {
+          log.error(`argus ${id}: failed to stop children on shutdown: ${(err as Error).message}`);
+        }
+        if (argus.managerSessionId) {
+          this.db
+            .prepare("UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?")
+            .run(now(), now(), argus.managerSessionId);
+        }
+        this.writeProgress(id, null, 'argus_stopped', '');
+        process.exit(0);
+      })();
     };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
@@ -467,7 +481,9 @@ export class ArgusManager {
     const maxAttempts = this.maxAttemptsFor(id);
     for (const task of this.board.list(id, 'assigned')) {
       const session = task.assigneeSession ? this.sessions.get(task.assigneeSession) : undefined;
-      if (!session || (session.status !== 'stopped' && session.status !== 'failed')) continue;
+      if (!session || session.startedAt === null || (session.status !== 'stopped' && session.status !== 'failed')) {
+        continue;
+      }
       this.board.toRevising(task.id, 'worker exited before report_done');
       this.writeProgress(id, task.assigneeSession, 'worker_orphaned', task.title);
       if (this.atAttemptLimit(this.board.get(task.id)!, maxAttempts)) {
@@ -788,6 +804,13 @@ export class ArgusManager {
     return { mission, conventions };
   }
 
+  private isActiveChild(child: ArgusChild): boolean {
+    return (
+      child.session?.status === 'running' ||
+      (child.session?.status === 'stopped' && child.session?.endedAt === null)
+    );
+  }
+
   /**
    * Spawns exactly one worker for the highest-priority dispatchable task,
    * through the same rules as the automatic dispatcher. This is the shared
@@ -797,7 +820,7 @@ export class ArgusManager {
   async spawnNextWorker(id: string): Promise<{ task: Task; session: Session }> {
     const argus = this.get(id);
     if (!argus) throw new Error(`argus "${id}" not found`);
-    const active = this.children(argus).filter((child) => child.session?.status === 'running');
+    const active = this.children(argus).filter((child) => this.isActiveChild(child));
     if (active.length >= argus.childLimit) throw new Error('fleet is already at its child limit');
     const task = this.board.dispatchable(id)[0];
     if (!task) throw new Error('no dispatchable task is available');
@@ -817,11 +840,12 @@ export class ArgusManager {
   private async dispatch(id: string): Promise<void> {
     const argus = this.get(id);
     if (!argus) return;
-    const active = this.children(argus).filter((c) => c.session?.status === 'running');
+    const active = this.children(argus).filter((c) => this.isActiveChild(c));
     let slots = argus.childLimit - active.length;
     const tasks = this.board.dispatchable(id);
     let i = 0;
     while (slots > 0 && i < tasks.length) {
+      if (this.stopping) break;
       try {
         await this.spawnNextWorker(id);
         slots -= 1;
@@ -865,6 +889,10 @@ export class ArgusManager {
       '- Automated test and lint gates run immediately after you report. If they fail, the task comes back to you with the output.',
     ].join('\n');
 
+    if (this.stopping) {
+      throw new Error(`argus "${argus.id}" is stopped`);
+    }
+
     await this.sessions.startSession(session.id, {
       headless: true,
       prompt,
@@ -886,15 +914,16 @@ export class ArgusManager {
   }
 
   async stop(id: string): Promise<void> {
+    this.stopping = true;
     const argus = this.get(id);
     if (!argus) throw new Error(`argus "${id}" not found`);
+    this.db.prepare("UPDATE argus SET status = 'stopped', last_pulse_at = ? WHERE id = ?").run(now(), id);
     const children = this.children(argus);
     for (const child of children) {
-      if (child.session?.status === 'running') {
+      if (child.session) {
         await this.sessions.stopSession(child.session.id);
       }
     }
-    this.db.prepare("UPDATE argus SET status = 'stopped', last_pulse_at = ? WHERE id = ?").run(now(), id);
     this.writeProgress(id, null, 'argus_stopped', `stopped ${children.length} children`);
   }
 

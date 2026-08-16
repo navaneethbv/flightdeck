@@ -30,6 +30,8 @@ describe('claim and release', () => {
   it('respawns the pane interactively and keeps the MCP config and token', async () => {
     const fixture = makeRepo();
     const harness = makeFakeHarness('claude');
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${harness.binDir}:${oldPath ?? ''}`;
     try {
       const sm = new SessionManager(fixture.root);
       const worker = sm.createSession({
@@ -61,6 +63,7 @@ describe('claim and release', () => {
       expect(sm.get(worker.id)?.token).toBe(worker.token);
       expect(sm.get(worker.id)?.claimedAt).not.toBeNull();
     } finally {
+      process.env.PATH = oldPath ?? '';
       harness.cleanup();
       fixture.cleanup();
     }

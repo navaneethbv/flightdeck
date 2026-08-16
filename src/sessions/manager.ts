@@ -1,6 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
@@ -32,6 +33,34 @@ export interface StartOptions {
 }
 
 const running = new Map<string, ChildProcess>();
+
+/**
+ * Under test, a coding-agent binary may only be executed from a fixture stub
+ * inside the OS temporary directory. Every fake harness in the suite is
+ * created with `fs.mkdtempSync(path.join(os.tmpdir(), ...))`, and no real
+ * install lives there, so this is a precise rule with no false positives.
+ *
+ * The check lives here, at the one place a harness is ever spawned, and the
+ * environment variable is inherited by child CLI processes. That matters:
+ * the agents this guard exists to prevent were spawned by a child
+ * `deck argus start`, which an in-process-only guard would never have seen.
+ */
+function assertHarnessSpawnAllowed(binary: string): void {
+  if (process.env.FLIGHTDECK_FORBID_REAL_HARNESS !== '1') return;
+  let resolved: string;
+  try {
+    resolved = execFileSync('which', [binary], { encoding: 'utf8' }).trim();
+  } catch {
+    return; // not resolvable at all; the spawn will fail on its own
+  }
+  const tmp = fs.realpathSync(os.tmpdir());
+  if (!fs.realpathSync(resolved).startsWith(`${tmp}${path.sep}`)) {
+    throw new Error(
+      `refusing to spawn the real "${binary}" binary at ${resolved} from a test; ` +
+        'create a fixture stub with makeFakeHarness and prepend its directory to PATH'
+    );
+  }
+}
 
 export function rowToSession(row: Record<string, unknown>): Session {
   return {
@@ -109,6 +138,7 @@ export class SessionManager {
     const session = this.get(id);
     if (!session) throw new Error(`session "${id}" not found`);
     const adapter = adapters[session.harness];
+    assertHarnessSpawnAllowed(adapter.binary);
     const cwd = session.cwd;
     fs.mkdirSync(cwd, { recursive: true });
 
@@ -184,40 +214,35 @@ export class SessionManager {
           }
         });
         child.stderr?.on('data', (d) => {
+          const raw = d.toString();
           try {
-            const text = collector.feed(d.toString(), 'stderr');
-            if (text) logStream?.write(text);
-          } catch {
-            // ignore
-          }
-        });
-        child.on('close', () => {
-          try {
-            const text = collector.flush();
+            const text = collector.feed(raw, 'stderr');
             if (text) logStream?.write(text);
           } catch {
             // ignore
           }
         });
       } catch (err) {
-        log.error(`session ${session.id} log open error: ${(err as Error).message}`);
+        log.error(`session ${session.id} collector setup error: ${(err as Error).message}`);
       }
     }
 
-    const finish = async (code: number | null, signal: string | null): Promise<void> => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
       running.delete(id);
-      try {
-        const dbNow = getDb(this.projectRoot);
-        // A claimed session is owned by a human in a fleet pane. Its headless
-        // child has already been stopped on purpose, so this close event must
-        // not overwrite the running/claimed state the claim just recorded.
-        // The claimed_at guard makes the update a no-op for either event order.
-        dbNow.prepare(
-          'UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, last_activity_at = ? WHERE id = ? AND claimed_at IS NULL'
-        ).run(code === 0 ? 'stopped' : 'failed', now(), code, now(), id);
-      } catch {
-        // db might be cleaned up in tests
+      const closeDb = getDb(this.projectRoot);
+      const current = this.get(id);
+      if (current?.claimedAt) {
+        // Human takeover: do not overwrite status or end timestamps when the
+        // headless child process closes.
+        return;
       }
+      const finalStatus = code === 0 ? 'stopped' : 'failed';
+      closeDb
+        .prepare(
+          'UPDATE sessions SET status = ?, exit_code = ?, ended_at = ?, last_activity_at = ? WHERE id = ?'
+        )
+        .run(finalStatus, code, now(), now(), id);
+
       if (logStream) {
         try {
           await new Promise<void>((resolve) => {
@@ -264,21 +289,24 @@ export class SessionManager {
     if (!session) throw new Error(`session "${id}" not found`);
     const child = running.get(id);
     if (child?.pid) {
-      if (child.stdout === null) {
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch {
         try {
-          process.kill(-child.pid, 'SIGTERM');
-        } catch {
           child.kill('SIGTERM');
+        } catch {
+          // already gone
         }
-      } else {
-        child.kill('SIGTERM');
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => {
           try {
             if (child.pid) {
-              if (child.stdout === null) process.kill(-child.pid, 'SIGKILL');
-              else child.kill('SIGKILL');
+              try {
+                process.kill(-child.pid, 'SIGKILL');
+              } catch {
+                child.kill('SIGKILL');
+              }
             }
           } catch {
             // already gone
@@ -290,12 +318,11 @@ export class SessionManager {
           resolve();
         });
       });
-    } else {
-      const db = getDb(this.projectRoot);
-      db.prepare(
-        "UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?"
-      ).run(now(), now(), id);
     }
+    const db = getDb(this.projectRoot);
+    db.prepare(
+      "UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?"
+    ).run(now(), now(), id);
   }
 
   async restartSession(id: string, opts: StartOptions = {}): Promise<Session> {

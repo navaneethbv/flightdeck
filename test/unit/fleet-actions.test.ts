@@ -36,6 +36,8 @@ describe('FleetActions', () => {
   it('claims and releases a worker through the shared service', async () => {
     const fixture = makeRepo();
     const harness = makeFakeHarness('opencode');
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${harness.binDir}:${oldPath ?? ''}`;
     try {
       const { worker } = seedFleet(fixture.root, { tasks: 1 });
       getDb(fixture.root)
@@ -48,6 +50,7 @@ describe('FleetActions', () => {
         action: 'release', sessionId: worker.id, resumed: true, message: expect.any(String),
       });
     } finally {
+      process.env.PATH = oldPath ?? '';
       harness.cleanup();
       fixture.cleanup();
     }
@@ -160,7 +163,11 @@ describe('FleetActions', () => {
       board.report(task.id, { summary: 's', filesChanged: [], testsRun: '', uncertainties: '' });
       board.beginGating(task.id);
       board.recordGates(task.id, { testExitCode: 0, lintExitCode: 0, failureTail: '' }, '');
-      const actions = new FleetActions(fixture.root);
+      const manager = new ArgusManager(
+        fixture.root,
+        async () => `{"verdicts":[{"task_id":"${task.id}","verdict":"accept","reason":"looks good","paths":[]}]}`
+      );
+      const actions = new FleetActions(fixture.root, { argus: manager });
       const result = await actions.forceReview(argus.id);
       expect(result).toMatchObject({ action: 'force-review' });
     } finally {

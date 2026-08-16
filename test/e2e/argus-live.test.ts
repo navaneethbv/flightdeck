@@ -28,6 +28,8 @@ describe('argus live topology (opt-in)', () => {
     { timeout: 120000, skip: !LIVE || !hasBinary('codex') || !hasBinary('opencode') },
     async () => {
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-live-'));
+      const previousGuard = process.env.FLIGHTDECK_FORBID_REAL_HARNESS;
+      delete process.env.FLIGHTDECK_FORBID_REAL_HARNESS;
       try {
         execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: fixture });
         execFileSync('git', ['config', 'user.email', 'live@example.com'], { cwd: fixture });
@@ -106,6 +108,7 @@ describe('argus live topology (opt-in)', () => {
 
         child.kill('SIGTERM');
       } finally {
+        if (previousGuard !== undefined) process.env.FLIGHTDECK_FORBID_REAL_HARNESS = previousGuard;
         try {
           child.kill('SIGTERM');
         } catch {
