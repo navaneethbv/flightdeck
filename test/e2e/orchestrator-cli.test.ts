@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
-import { runCli, spawnCli, makeRepo, makeFakeHarness, sleep } from '../helpers.js';
+import { runCli, spawnCli, makeRepo, sleep } from '../helpers.js';
 
 describe('orchestrator CLI', () => {
   it('prints the board as JSON', () => {
