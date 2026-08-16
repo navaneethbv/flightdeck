@@ -164,6 +164,42 @@ deck argus start \
 - The token budget degrades by spend: below 60% reviews one task at a time, 60-80% batches four, 80-95% batches everything once four tasks queue or a task ages 30 minutes, and at or above 95% reviews pause. `force-review` may ignore the pause and batching below 100% but never the ceiling.
 - Worker questions are answered independently of the mission pulse, so `ask_manager` is not delayed by a long `--pulse`.
 
+### Fleet Window & Controls
+| Command | Description |
+| :--- | :--- |
+| `deck fleet` | Create the tmux window, reconcile worker panes, and attach |
+| `deck fleet console` | Interactive control pane with selectable workers and tasks |
+| `deck fleet claim <session-id> [--json]` | Take over a worker in its pane |
+| `deck fleet release <session-id> [--resume] [--json]` | End a claim and return the pane to the log |
+| `deck fleet kill <session-id> --yes [--json]` | Stop a worker and block its active task while preserving the worktree |
+| `deck fleet worker start --argus <id> [--json]` | Spawn one worker for the highest-priority dispatchable task |
+| `deck fleet override accept\|reject\|unblock\|prioritize <task-id> [reason] --argus <id> [--json]` | Human overrides of brain decisions |
+| `deck fleet override force-review --argus <id> [--json]` | Drain the review queue now, below the budget ceiling |
+
+Every console action calls the same `FleetActions` service as its CLI equivalent.
+
+Console keys (Tab switches between the Workers and Tasks lists, arrows move the selection):
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Switch worker/task focus |
+| Up/Down | Move the current selection |
+| `c` | Claim selected worker |
+| `r` | Release selected worker without headless resume |
+| `R` | Release selected worker and resume headless |
+| `k` | Confirm, then kill selected worker and block its task |
+| `n` | Spawn a worker for the next dispatchable task |
+| `a` | Accept selected task |
+| `x` | Enter a reject reason, then reject selected task |
+| `u` | Unblock selected task |
+| `p` | Prioritize selected task |
+| `f` | Force review for the selected fleet |
+| `q` | Quit only when no confirmation or text input is active |
+
+A new worker always consumes the highest-priority ready task, so a manual spawn can never create an untracked agent.
+Kill preserves the worktree and blocks the active task so a human can inspect it before unblocking.
+Task overrides require an explicit `--argus <id>` when more than one fleet exists; the newest fleet is never guessed.
+
 ### Watchdog Supervisor
 | Command | Description |
 | :--- | :--- |
@@ -206,6 +242,7 @@ deck argus start \
 | :--- | :--- |
 | `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane (protected by a capability token printed with the URL) |
 | `deck tui` | Open the interactive 3-tab terminal dashboard |
+| `deck login [harness...]` | Authenticate your coding-agent harnesses (`claude`, `codex`, `opencode`, `gemini`); `--check` reports auth status without running a login flow |
 | `deck doctor [--fix]` | Run environment diagnostics and repair state issues |
 | `deck repair` | Self-heal project directories, dead sessions, and worktree references |
 | `deck config set-default-harness <harness>` | Set global default harness (`gemini`, `claude`, `codex`, `opencode`) |
