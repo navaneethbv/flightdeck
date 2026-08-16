@@ -3,6 +3,8 @@ import { projectRootOf, printJson, handleError, parseSeconds } from '../util.js'
 import { ArgusManager } from '../../argus/manager.js';
 import { NotesStore } from '../../notes/store.js';
 import { renderMissionTemplate, type MissionTemplateKind } from '../../argus/templates.js';
+import { TaskBoard } from '../../argus/board.js';
+import { budgetState } from '../../argus/budget.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
@@ -133,6 +135,102 @@ export function registerArgus(program: Command): void {
           }
           printArgusList(list);
         }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('board <id>')
+    .description('Show the task board for a fleet')
+    .option('--json', 'output JSON')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action((id: string, opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        const tasks = new TaskBoard(projectRoot).list(id);
+        if (opts.json) {
+          console.log(JSON.stringify(tasks, null, 2));
+          return;
+        }
+        if (tasks.length === 0) {
+          console.log('(no tasks)');
+          return;
+        }
+        for (const task of tasks) {
+          const attempts = task.attempts > 0 ? ` attempts=${task.attempts}` : '';
+          console.log(`${task.status.padEnd(10)} ${task.id.slice(0, 8)}  ${task.title}${attempts}`);
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('budget <id>')
+    .description('Show brain token spend for the current window')
+    .option('--json', 'output JSON')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action((id: string, opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        const state = budgetState(projectRoot, id);
+        if (opts.json) {
+          console.log(JSON.stringify(state, null, 2));
+          return;
+        }
+        const pct = (state.fraction * 100).toFixed(1);
+        console.log(`spent   ${state.spent} / ${state.ceiling} tokens (${pct}%)`);
+        console.log(`tier    ${state.tier}`);
+        console.log(`reviews ${state.policy.reviewsAllowed ? 'draining' : 'paused'}`);
+        console.log(`tier 2  ${state.policy.tier2Allowed ? 'allowed' : 'disabled'}`);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('task <taskId>')
+    .description('Show one task in full, including the worker report and gate output')
+    .option('--json', 'output JSON')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action((taskId: string, opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        const task = new TaskBoard(projectRoot).get(taskId);
+        if (!task) throw new Error(`task "${taskId}" not found`);
+        if (opts.json) {
+          console.log(JSON.stringify(task, null, 2));
+          return;
+        }
+        console.log(`${task.title}  [${task.status}]`);
+        console.log(`\nSpec:\n${task.spec}`);
+        if (task.workerReport) {
+          console.log(`\nWorker summary:\n${task.workerReport.summary}`);
+          console.log(`Uncertainties: ${task.workerReport.uncertainties || '(none)'}`);
+        }
+        if (task.gateResult) {
+          console.log(
+            `\nGates: test=${task.gateResult.testExitCode ?? 'skipped'} lint=${task.gateResult.lintExitCode ?? 'skipped'}`
+          );
+          if (task.gateResult.failureTail) console.log(task.gateResult.failureTail);
+        }
+        if (task.verdictReason) console.log(`\nFeedback:\n${task.verdictReason}`);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('plan <id>')
+    .description('Ask the brain to plan the mission into board tasks (costs brain tokens)')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action(async (id: string, opts: Record<string, string | boolean>) => {
+      try {
+        const projectRoot = projectRootOf(opts.project as string | undefined);
+        await new ArgusManager(projectRoot).plan(id);
+        const tasks = new TaskBoard(projectRoot).list(id);
+        console.log(`planned ${tasks.length} tasks`);
       } catch (err) {
         handleError(err);
       }
