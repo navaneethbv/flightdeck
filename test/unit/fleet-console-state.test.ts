@@ -136,6 +136,24 @@ describe('reduceConsoleState', () => {
     expect(s.effect).toEqual({ kind: 'accept', taskId: 't1', argusId: 'a1' });
   });
 
+  it('spawns the next task even when no worker exists yet', () => {
+    const s = reduce(initial(), { type: 'action', key: 'n' }, bounds({ workerIds: [] }));
+    expect(s.effect).toEqual({ kind: 'spawn', argusId: 'a1' });
+  });
+
+  it('emits no effect for any fleet action when the fleet is ambiguous', () => {
+    const none = bounds({ argusId: null });
+    for (const key of ['n', 'a', 'u', 'p', 'f'] as const) {
+      expect(reduce(initial(), { type: 'action', key }, none).effect).toBeNull();
+    }
+    const rejecting = reduce(
+      { ...initial(), focus: 'tasks', pendingAction: { kind: 'reject', taskId: 't1' }, rejectReason: 'no' },
+      { type: 'confirm' },
+      none
+    );
+    expect(rejecting.effect).toBeNull();
+  });
+
   it('leaves state unchanged for unknown keys', () => {
     const s = reduce(initial(), { type: 'action', key: 'z' as never });
     expect(s.state).toEqual(initial());

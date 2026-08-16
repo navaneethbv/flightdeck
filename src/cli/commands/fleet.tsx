@@ -17,13 +17,13 @@ export interface ConsoleSnapshot {
   sessions: ReturnType<FleetManager['fleetSessions']>;
   argusId: string | null;
   tasks: Task[];
-  blockedTasks: Task[];
   reviewQueueDepth: number;
   nextBudgetResetAt: number | null;
   spent: number;
   ceiling: number;
   tier: string;
   progress: string[];
+  fleetError: string | null;
   tick: number;
 }
 
@@ -54,20 +54,30 @@ function shortId(id: string): string {
 function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   const fleet = new FleetManager(projectRoot);
   fleet.reconcile();
-  const argus = new ArgusManager(projectRoot).list()[0] ?? null;
   const empty = {
     sessions: fleet.fleetSessions(),
     argusId: null,
     tasks: [] as Task[],
-    blockedTasks: [] as Task[],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
     progress: [] as string[],
+    fleetError: null as string | null,
   };
-  if (!argus) return empty;
+  const fleets = new ArgusManager(projectRoot).list();
+  if (fleets.length === 0) {
+    return { ...empty, fleetError: 'no argus fleet exists in this project' };
+  }
+  if (fleets.length > 1) {
+    return {
+      ...empty,
+      sessions: fleet.fleetSessions(),
+      fleetError: 'multiple fleets exist; drive them from the CLI with --argus <id> until a fleet selector exists',
+    };
+  }
+  const argus = fleets[0];
   const all = new TaskBoard(projectRoot).list(argus.id);
   const budget = budgetState(projectRoot, argus.id);
   const progress = new TablesStore(projectRoot)
@@ -81,13 +91,13 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
     sessions: fleet.fleetSessions(),
     argusId: argus.id,
     tasks: sortTasks(all),
-    blockedTasks: sortTasks(all.filter((t) => t.status === 'blocked')),
     reviewQueueDepth: budget.reviewQueueDepth,
     nextBudgetResetAt: budget.nextResetAt,
     spent: budget.spent,
     ceiling: budget.ceiling,
     tier: budget.tier,
     progress,
+    fleetError: null,
   };
 }
 
@@ -144,12 +154,10 @@ export function FleetConsoleView({
   snap,
   state,
   message,
-  onEffect: _onEffect,
 }: {
   snap: ConsoleSnapshot;
   state: FleetConsoleState;
   message: string;
-  onEffect: (effect: ConsoleEffect) => void;
 }): ReactElement {
   const countsLabel = Object.entries(
     snap.tasks.reduce<Record<string, number>>((acc, t) => {
@@ -160,8 +168,8 @@ export function FleetConsoleView({
     .map(([status, count]) => `${status}=${count}`)
     .join('  ');
 
-  // A claimed session reports no parseable usage, so its spend renders blank
-  // rather than zero. Zero would be fabricated data.
+  // The ceiling can be zero only for a corrupt row, and a zero-denominator
+  // percentage would be fabricated, so the label renders blank instead.
   const spendLabel = snap.ceiling > 0
     ? `${snap.spent} / ${snap.ceiling} (${((snap.spent / snap.ceiling) * 100).toFixed(0)}%)`
     : '';
@@ -172,6 +180,8 @@ export function FleetConsoleView({
         <Text bold color="cyan">{'flightdeck fleet  '}</Text>
         <Text dimColor>{'select with Tab/arrows  '}</Text>
       </Box>
+
+      {snap.fleetError !== null && <Text color="red">{snap.fleetError}</Text>}
 
       <Text bold underline>Workers</Text>
       <Box flexDirection="column" marginBottom={1}>
@@ -334,7 +344,6 @@ function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactE
       snap={snap}
       state={state}
       message={message}
-      onEffect={runEffect}
     />
   );
 }

@@ -98,10 +98,10 @@ export function reduceConsoleState(
       if (pending?.kind === 'kill') {
         return { state: { ...clamped, pendingAction: null }, effect: { kind: 'kill', sessionId: pending.sessionId } };
       }
-      if (pending?.kind === 'reject' && clamped.rejectReason.trim() !== '') {
+      if (pending?.kind === 'reject' && clamped.rejectReason.trim() !== '' && bounds.argusId) {
         return {
           state: { ...clamped, pendingAction: null, rejectReason: '' },
-          effect: { kind: 'reject', taskId: pending.taskId, argusId: bounds.argusId ?? '', reason: clamped.rejectReason.trim() },
+          effect: { kind: 'reject', taskId: pending.taskId, argusId: bounds.argusId, reason: clamped.rejectReason.trim() },
         };
       }
       return { state: clamped, effect: null };
@@ -116,7 +116,7 @@ export function reduceConsoleState(
 
 function reduceKey(
   state: FleetConsoleState,
-  key: ConsoleEvent['type'] extends never ? never : 'c' | 'r' | 'k' | 'n' | 'a' | 'x' | 'u' | 'p' | 'f' | 'R' | 'y',
+  key: 'c' | 'r' | 'k' | 'n' | 'a' | 'x' | 'u' | 'p' | 'f' | 'R' | 'y',
   bounds: ConsoleBounds
 ): ConsoleTransition {
   const workerId = bounds.workerIds[state.workerIndex] ?? null;
@@ -148,11 +148,12 @@ function reduceKey(
       }
       return { state, effect: null };
     case 'n':
-      return state.pendingAction
-        ? { state: { ...state, pendingAction: null, rejectReason: '' }, effect: null }
-        : workerId
-          ? { state, effect: { kind: 'spawn', argusId: bounds.argusId ?? '' } }
-          : { state, effect: null };
+      if (state.pendingAction) {
+        return { state: { ...state, pendingAction: null, rejectReason: '' }, effect: null };
+      }
+      return bounds.argusId
+        ? { state, effect: { kind: 'spawn', argusId: bounds.argusId } }
+        : { state, effect: null };
     case 'a':
       return taskId && bounds.argusId
         ? { state, effect: { kind: 'accept', taskId, argusId: bounds.argusId } }

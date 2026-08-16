@@ -20,13 +20,13 @@ function snapshot(overrides: Partial<ConsoleSnapshot> = {}): ConsoleSnapshot {
     sessions: [],
     argusId: null,
     tasks: [],
-    blockedTasks: [],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
     progress: [],
+    fleetError: null,
     tick: 1,
     ...overrides,
   };
@@ -37,7 +37,6 @@ function render(snap: ConsoleSnapshot, st: FleetConsoleState, message = ''): str
     snap,
     state: st,
     message,
-    onEffect: () => {},
   }) as ReactElement;
   return renderToString(el, { columns: 100 });
 }
@@ -81,13 +80,6 @@ describe('FleetConsoleView', () => {
           id: 't-bbbbbbbb-0000', argusId: 'a1', title: 'add schema', spec: 's', status: 'pending',
           assigneeSession: null, dependsOn: [], attempts: 0, workerReport: null, gateResult: null,
           diffstat: null, verdict: null, verdictReason: null, createdAt: 2, updatedAt: 2, priority: 0,
-        },
-      ],
-      blockedTasks: [
-        {
-          id: 't-aaaaaaaa-0000', argusId: 'a1', title: 'fix parser', spec: 's', status: 'blocked',
-          assigneeSession: null, dependsOn: [], attempts: 2, workerReport: null, gateResult: null,
-          diffstat: null, verdict: null, verdictReason: 'exhausted 3 attempts: tests fail', createdAt: 1, updatedAt: 2, priority: 0,
         },
       ],
     });
@@ -141,5 +133,17 @@ describe('FleetConsoleView', () => {
     // Unknown spend must not render as 0.
     const unknown = render(snapshot({ argusId: 'a1', spent: 0, ceiling: 0 }), state());
     expect(unknown).not.toMatch(/0 \/ 0/);
+  });
+
+  it('renders fleetError when multiple fleets exist and draws no task rows', () => {
+    const snap = snapshot({
+      argusId: null,
+      fleetError: 'multiple fleets exist; drive them from the CLI with --argus <id> until a fleet selector exists',
+      tasks: [],
+    });
+    const output = render(snap, state());
+    expect(output).toContain('multiple fleets exist');
+    expect(output).toContain('Tasks');
+    expect(output).toContain('(none)');
   });
 });
