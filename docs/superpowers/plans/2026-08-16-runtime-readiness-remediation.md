@@ -106,11 +106,279 @@ The third command must print nothing.
 | `test/integration/orchestration.test.ts` | Abandoned-question containment under repeated scheduler passes. |
 | `README.md` | Correct the console fleet-selection and kill-confirmation description. |
 
-**Dependency order:** Task 1 is independent and unblocks CI, so it lands first.
+**Dependency order:** Task 0 lands first and blocks everything else. Do not run the suite for any later task until Task 0 is committed.
+Task 1 unblocks CI.
 Task 2 is independent.
 Task 3 is independent.
 Task 4 precedes Task 5 (both touch `src/cli/commands/fleet.tsx`).
-Task 6 depends on Tasks 1 through 5.
+Task 6 depends on Tasks 0 through 5.
+
+---
+
+### Task 0: Make it impossible for a test to spawn a real coding agent
+
+Four independent links had to hold for the incident above to happen. This task breaks all four, because breaking one leaves the class of failure alive.
+
+**Files:**
+
+- Modify: `src/sessions/manager.ts`
+- Modify: `src/argus/manager.ts`
+- Modify: `test/setup.ts`
+- Modify: `test/helpers.ts`
+- Modify: `test/unit/telemetry.test.ts`
+- Create: `test/unit/harness-spawn-guard.test.ts`
+- Create: `test/global-teardown.ts`
+- Modify: `vitest.config.ts`
+
+**Interfaces:**
+
+- Consumes: `FLIGHTDECK_FORBID_REAL_HARNESS`, read at spawn time and inherited by every child process because `runCli` and `spawnCli` spread `process.env`.
+- Produces: a spawn guard in `SessionManager.startSession`, a child-stopping shutdown in `ArgusManager.runForever`, a non-echoing `makeFakeHarness`, and a vitest global teardown.
+
+- [ ] **Step 1: Write the failing guard test**
+
+Create `test/unit/harness-spawn-guard.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { SessionManager } from '../../src/sessions/manager.js';
+import { makeRepo, makeFakeHarness } from '../helpers.js';
+
+describe('real harness spawn guard', () => {
+  it('refuses to start a session whose binary is not a fixture stub', async () => {
+    const fixture = makeRepo();
+    try {
+      const sessions = new SessionManager(fixture.root);
+      const session = sessions.createSession({
+        name: 'w1', harness: 'opencode', cwd: fixture.root, policy: 'child',
+      });
+      // No stub on PATH: this would otherwise resolve the real binary.
+      await expect(
+        sessions.startSession(session.id, { headless: true, prompt: 'x', waitForExit: true })
+      ).rejects.toThrow(/refusing to spawn the real "opencode" binary/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('allows a stub inside the temporary fixture directory', async () => {
+    const fixture = makeRepo();
+    const fake = makeFakeHarness('opencode');
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${fake.binDir}:${oldPath ?? ''}`;
+    try {
+      const sessions = new SessionManager(fixture.root);
+      const session = sessions.createSession({
+        name: 'w1', harness: 'opencode', cwd: fixture.root, policy: 'child',
+      });
+      await expect(
+        sessions.startSession(session.id, { headless: true, prompt: 'x', waitForExit: true })
+      ).resolves.toBeDefined();
+    } finally {
+      process.env.PATH = oldPath ?? '';
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch the first case spawn a real agent**
+
+```bash
+npm run build
+npx vitest run test/unit/harness-spawn-guard.test.ts
+```
+
+Expected: the first case fails because no guard exists. Before moving on, confirm with `ps -eo command | grep 'opencode run'` that the run left a real process behind, and kill it. That is the bug, reproduced deliberately and exactly once.
+
+- [ ] **Step 3: Implement the guard at the single spawn site**
+
+In `src/sessions/manager.ts`, above `startSession`:
+
+```typescript
+/**
+ * Under test, a coding-agent binary may only be executed from a fixture stub
+ * inside the OS temporary directory. Every fake harness in the suite is
+ * created with `fs.mkdtempSync(path.join(os.tmpdir(), ...))`, and no real
+ * install lives there, so this is a precise rule with no false positives.
+ *
+ * The check lives here, at the one place a harness is ever spawned, and the
+ * environment variable is inherited by child CLI processes. That matters:
+ * the agents this guard exists to prevent were spawned by a child
+ * `deck argus start`, which an in-process-only guard would never have seen.
+ */
+function assertHarnessSpawnAllowed(binary: string): void {
+  if (process.env.FLIGHTDECK_FORBID_REAL_HARNESS !== '1') return;
+  let resolved: string;
+  try {
+    resolved = execFileSync('which', [binary], { encoding: 'utf8' }).trim();
+  } catch {
+    return; // not resolvable at all; the spawn will fail on its own
+  }
+  const tmp = fs.realpathSync(os.tmpdir());
+  if (!fs.realpathSync(resolved).startsWith(`${tmp}${path.sep}`)) {
+    throw new Error(
+      `refusing to spawn the real "${binary}" binary at ${resolved} from a test; ` +
+        'create a fixture stub with makeFakeHarness and prepend its directory to PATH'
+    );
+  }
+}
+```
+
+Call it as the first statement of `startSession` after the adapter is resolved:
+
+```typescript
+assertHarnessSpawnAllowed(adapter.binary);
+```
+
+Add the `os` and `execFileSync` imports if the file does not already have them.
+
+- [ ] **Step 4: Turn the guard on for every test process**
+
+Append to `test/setup.ts`:
+
+```typescript
+// No test, and no child process a test spawns, may execute a real coding
+// agent. `runCli` and `spawnCli` spread `process.env`, so this reaches the
+// child `deck argus start` processes that spawn workers.
+process.env.FLIGHTDECK_FORBID_REAL_HARNESS = '1';
+```
+
+The opt-in live test at `test/e2e/argus-live.test.ts` genuinely needs real binaries. Give it the only exemption, inside its own `try`, and restore it in the `finally`:
+
+```typescript
+const previousGuard = process.env.FLIGHTDECK_FORBID_REAL_HARNESS;
+delete process.env.FLIGHTDECK_FORBID_REAL_HARNESS;
+// ... existing body ...
+// in finally:
+if (previousGuard !== undefined) process.env.FLIGHTDECK_FORBID_REAL_HARNESS = previousGuard;
+```
+
+- [ ] **Step 5: Stop the fake harness from echoing a valid plan**
+
+In `test/helpers.ts`, replace the script in `makeFakeHarness`:
+
+```typescript
+export function makeFakeHarness(binName: string): { binDir: string; cleanup(): void } {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
+  // Never echo "$@". The argv carries the brain prompt, and that prompt
+  // contains a JSON format example. `extractJson` takes the last balanced
+  // JSON object in the stream, so echoing argv returns a schema-valid plan
+  // and the manager dispatches real workers for a task nobody asked for.
+  const script = `#!/bin/bash\necho "flightdeck fake ${binName}" >&2\nexit 0\n`;
+  fs.writeFileSync(path.join(binDir, binName), script, { mode: 0o755 });
+  return {
+    binDir,
+    cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }),
+  };
+}
+```
+
+Run the whole suite after this change. Any test that silently depended on the echoed plan will now fail honestly; fix each by having its stub print the exact JSON that test needs, never by restoring the echo.
+
+- [ ] **Step 6: Move the one out-of-tmpdir stub**
+
+`test/unit/telemetry.test.ts:371` creates its bin directory inside the repository (`path.join(import.meta.dirname, '..', '..', 'tmp-bin-')`), which the guard will reject. Change it to `fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'))` like every other fixture, and add the `os` import.
+
+- [ ] **Step 7: Make a signalled manager stop its fleet**
+
+In `src/argus/manager.ts`, `runForever`'s handler currently writes two rows and calls `process.exit(0)`, orphaning every worker. Replace it:
+
+```typescript
+let stopping = false;
+const stop = (): void => {
+  if (stopping) return; // a second signal must not race the first shutdown
+  stopping = true;
+  void (async () => {
+    try {
+      // Stops every child session this fleet spawned. Without it, SIGTERM to
+      // the manager leaves autonomous agents running with no supervisor.
+      await this.stop(id);
+    } catch (err) {
+      log.error(`argus ${id}: failed to stop children on shutdown: ${(err as Error).message}`);
+    }
+    if (argus.managerSessionId) {
+      this.db
+        .prepare("UPDATE sessions SET status = 'stopped', ended_at = ?, last_activity_at = ? WHERE id = ?")
+        .run(now(), now(), argus.managerSessionId);
+    }
+    this.writeProgress(id, null, 'argus_stopped', '');
+    process.exit(0);
+  })();
+};
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
+```
+
+`ArgusManager.stop(id)` already sets the Argus row to stopped and stops running children, so the duplicated status write is removed rather than kept.
+
+- [ ] **Step 8: Add the failing shutdown test**
+
+Add to `test/e2e/argus.test.ts`, using the existing fake fleet harness:
+
+```typescript
+it('stops its worker sessions when the manager is signalled', async () => {
+  // ... spawn `argus start` with the fake harness on PATH, wait until at
+  // least one child session row reaches status 'running' ...
+  child.kill('SIGTERM');
+  await new Promise((resolve) => child.on('close', resolve));
+
+  const sessions = new SessionManager(fixture.root).list().filter((s) => s.policy === 'child');
+  expect(sessions.length).toBeGreaterThan(0);
+  for (const s of sessions) {
+    expect(s.status, `child ${s.name} was orphaned`).not.toBe('running');
+  }
+});
+```
+
+- [ ] **Step 9: Reap anything the run still leaves behind**
+
+Create `test/global-teardown.ts`:
+
+```typescript
+import { execFileSync } from 'node:child_process';
+
+/**
+ * Last line of defence. Even with the spawn guard, a crashed test can leave a
+ * stub process behind, and a stub that hangs is still a leaked process. This
+ * kills anything whose argv points at a fixture directory from this run.
+ */
+export default function teardown(): void {
+  for (const pattern of ['flightdeck-repo-', 'flightdeck-bin-', 'flightdeck-test-home-']) {
+    try {
+      execFileSync('pkill', ['-f', pattern], { stdio: 'ignore' });
+    } catch {
+      // pkill exits non-zero when nothing matched, which is the good case.
+    }
+  }
+}
+```
+
+Register it in `vitest.config.ts`:
+
+```typescript
+globalSetup: ['./test/global-teardown.ts'],
+```
+
+Vitest runs a `globalSetup` module's default export at start and its returned function at end; export the teardown as the returned function if the installed vitest version requires that shape. Verify the shape against the installed version rather than guessing, and confirm the teardown actually runs by leaving a stub process behind on purpose once.
+
+- [ ] **Step 10: Prove containment**
+
+```bash
+npm run build
+npm test
+ps -eo pid,etime,command | grep -E 'opencode run|codex exec|flightdeck-bin-' | grep -v grep
+```
+
+Expected: the suite passes and the process listing is empty. Run it twice and check the listing after each run.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/sessions/manager.ts src/argus/manager.ts test/setup.ts test/helpers.ts test/global-teardown.ts vitest.config.ts test/unit/harness-spawn-guard.test.ts test/unit/telemetry.test.ts test/e2e/argus.test.ts test/e2e/argus-live.test.ts
+git commit -m "fix(test): forbid real harness spawns and reap leaked agents"
+```
 
 ---
 
@@ -952,9 +1220,10 @@ npm run typecheck
 npm run lint
 npm test
 git diff --check
+ps -eo pid,etime,command | grep -E 'opencode run|codex exec|claude -p|flightdeck-bin-' | grep -v grep
 ```
 
-Expected: every command exits zero, and `npm test` reports no failed files with only the explicit live-harness skip.
+Expected: the first four commands exit zero, `npm test` reports no failed files with only the explicit live-harness skip, and the process listing is empty. A non-empty listing means Task 0 regressed and this task is not done.
 
 - [ ] **Step 4: Confirm CI is green before requesting review**
 
@@ -978,6 +1247,8 @@ git commit -m "docs: track the runtime readiness plans and correct the fleet ref
 
 These were found in the same review and are deliberately out of scope. Each needs its own decision before it gets a plan:
 
+- **Worker spend is invisible to the budget.** `budgetState` sums only `policy = 'brain'` sessions, so the 79 leaked workers consumed tokens that no ceiling, tier, or pause could ever have seen. The brain budget protects the reviewer's rate limit and nothing else. Deciding whether workers get their own budget, a shared one, or only a concurrency ceiling is a design question that belongs in the orchestrator spec before it becomes a plan.
+- **There is no fleet-wide reaper.** Nothing outside a live manager process can find and stop agents belonging to this project. `deck fleet kill` needs an explicit session id, and a manager that died takes its knowledge with it. A `deck fleet reap` that stops every `policy: 'child'` session whose manager is gone would have turned this incident into a one-command cleanup.
 - **Gemini worker path is unverified.** `deck argus start --worker-harness gemini` is now a validated, advertised option, but the adapter emits `gemini run <prompt> --auto-approve`, which does not match the Gemini CLI's actual contract, and `loginArgs()` guesses `gemini login`. Either verify against an installed binary and correct the adapter, or drop `gemini` from `WorkerHarness` until it is verified.
 - **`deck login` and the dashboard capability-token gate** landed in PR #18 without a plan and are not mentioned in its summary. `deck login --json` pipes stdio into an interactive OAuth flow with no timeout, which will hang. This needs its own design pass.
 - **`deck argus status --json` prints the Argus `cap`**, the capability secret that gates `isManager`. Pre-existing, but the JSON payload grew in this PR and now travels further.

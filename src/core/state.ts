@@ -163,7 +163,8 @@ function migrate(db: DatabaseSync): void {
       answer TEXT,
       faq_key TEXT,
       created_at INTEGER NOT NULL,
-      answered_at INTEGER
+      answered_at INTEGER,
+      failed_at INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_root);
@@ -195,6 +196,14 @@ function migrate(db: DatabaseSync): void {
   for (const col of argusColumns) {
     try {
       db.exec(`ALTER TABLE argus ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
+  const questionColumns = ['failed_at INTEGER'];
+  for (const col of questionColumns) {
+    try {
+      db.exec(`ALTER TABLE questions ADD COLUMN ${col};`);
     } catch {
       // column already exists
     }

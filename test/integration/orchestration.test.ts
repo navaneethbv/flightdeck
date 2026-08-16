@@ -465,7 +465,7 @@ describe('orchestration', () => {
     }
   });
 
-  it('keeps the manager alive when answering a question with malformed output twice', async () => {
+  it('abandons a question after exactly two calls even under the scheduler loop', async () => {
     const fixture = makeRepo();
     try {
       let answerCalls = 0;
@@ -478,15 +478,18 @@ describe('orchestration', () => {
       const asked = queue.ask(argus.id, 'worker-1', 'help?');
       if (asked.hit) throw new Error('expected a cache miss');
 
-      await manager.answerQuestions(argus.id);
+      // Ten scheduler passes stand in for the 250 ms loop running for seconds.
+      for (let i = 0; i < 10; i++) {
+        await manager.answerQuestions(argus.id);
+      }
 
       expect(answerCalls).toBe(2);
       expect(queue.get(asked.id)?.answer).toBeNull();
-      expect(manager.get(argus.id)?.status).toBe('stopped');
+      expect(queue.pending(argus.id)).toHaveLength(0);
       const progress = new TablesStore(fixture.root).query('argus_progress', {
-        where: { argus_id: argus.id }, limit: 20,
+        where: { argus_id: argus.id }, limit: 50,
       });
-      expect(progress.map((r) => String(r.event))).toContain('question_failed');
+      expect(progress.filter((r) => String(r.event) === 'question_failed')).toHaveLength(1);
     } finally {
       fixture.cleanup();
     }

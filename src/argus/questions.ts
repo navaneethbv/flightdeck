@@ -51,6 +51,7 @@ function rowToQuestion(row: Record<string, unknown>): Question {
     faqKey: typeof row.faq_key === 'string' ? row.faq_key : null,
     createdAt: Number(row.created_at),
     answeredAt: row.answered_at === null ? null : Number(row.answered_at),
+    failedAt: row.failed_at === null || row.failed_at === undefined ? null : Number(row.failed_at),
   };
 }
 
@@ -98,9 +99,23 @@ export class QuestionQueue {
 
   pending(argusId: string): Question[] {
     const rows = this.db
-      .prepare('SELECT * FROM questions WHERE argus_id = ? AND answer IS NULL ORDER BY id ASC')
+      .prepare(
+        'SELECT * FROM questions WHERE argus_id = ? AND answer IS NULL AND failed_at IS NULL ORDER BY id ASC'
+      )
       .all(argusId) as Record<string, unknown>[];
     return rows.map(rowToQuestion);
+  }
+
+  /**
+   * Marks a question the brain could not answer. The answer stays null so the
+   * waiting worker still receives its normal timeout directive and the FAQ is
+   * never poisoned with a failure, but the question leaves the pending set so
+   * the scheduler cannot re-invoke a brain that already failed twice.
+   */
+  markFailed(id: number, reason: string): void {
+    this.db
+      .prepare('UPDATE questions SET failed_at = ?, faq_key = ? WHERE id = ?')
+      .run(...([now(), `failed:${reason.slice(0, 80)}`, id] as SQLInputValue[]));
   }
 
   get(id: number): Question | null {

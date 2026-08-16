@@ -327,7 +327,7 @@ export class ArgusManager {
    */
   private hasPendingEvents(id: string): boolean {
     const question = this.db
-      .prepare('SELECT 1 FROM questions WHERE argus_id = ? AND answer IS NULL LIMIT 1')
+      .prepare('SELECT 1 FROM questions WHERE argus_id = ? AND answer IS NULL AND failed_at IS NULL LIMIT 1')
       .get(id);
     if (question) return true;
     const reported = this.db
@@ -339,10 +339,12 @@ export class ArgusManager {
   /** Handles worker events between mission pulses, without any model polling. */
   private async processPendingEvents(id: string): Promise<void> {
     await this.answerQuestions(id);
-    await this.runGatesForReported(id);
+    const promoted = await this.runGatesForReported(id);
     await this.resumeRevisions(id);
-    await this.drainReviews(id);
-    await this.resumeRevisions(id);
+    if (promoted > 0) {
+      await this.drainReviews(id);
+      await this.resumeRevisions(id);
+    }
   }
 
   /**
@@ -436,10 +438,11 @@ export class ArgusManager {
    * which is the point: objectively broken work must never reach a
    * rate-limited reviewer.
    */
-  async runGatesForReported(id: string, cmds: GateCommands = gateCommandsFromConfig()): Promise<void> {
+  async runGatesForReported(id: string, cmds: GateCommands = gateCommandsFromConfig()): Promise<number> {
     const argus = this.get(id);
-    if (!argus) return;
+    if (!argus) return 0;
     const maxAttempts = this.maxAttemptsFor(id);
+    let promoted = 0;
 
     for (const task of this.board.list(id, 'reported')) {
       this.board.beginGating(task.id);
@@ -447,6 +450,7 @@ export class ArgusManager {
       const cwd = session?.cwd ?? this.projectRoot;
       const result = runGates(cwd, cmds);
       const updated = this.board.recordGates(task.id, result, computeDiffstat(cwd));
+      if (updated.status === 'in_review') promoted += 1;
       this.writeProgress(
         id,
         task.assigneeSession,
@@ -458,6 +462,7 @@ export class ArgusManager {
         this.writeProgress(id, task.assigneeSession, 'task_blocked', task.title);
       }
     }
+    return promoted;
   }
 
   private maxAttemptsFor(id: string): number {
@@ -756,6 +761,7 @@ export class ArgusManager {
         this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
       } catch (err) {
         if (err instanceof BrainContractError) {
+          this.questions.markFailed(question.id, err.causeMessage);
           // The question stays unanswered so the waiting worker receives its
           // normal timeout directive, and the manager keeps serving later work.
           this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);

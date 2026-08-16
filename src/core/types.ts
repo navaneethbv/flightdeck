@@ -70,6 +70,7 @@ export interface Question {
   faqKey: string | null;
   createdAt: number;
   answeredAt: number | null;
+  failedAt: number | null;
 }
 
 export interface Session {
