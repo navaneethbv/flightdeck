@@ -134,6 +134,38 @@ export function parseAnswer(stdout: string): { answer: string; faqKey: string } 
   return { answer: parsed.answer, faqKey: parsed.faq_key };
 }
 
+/**
+ * Thrown after a brain call produced malformed output twice, so callers reach
+ * a visible terminal state instead of looping against a broken model.
+ */
+export class BrainContractError extends Error {
+  constructor(
+    readonly label: string,
+    readonly causeMessage: string
+  ) {
+    super(`brain ${label} output was malformed twice: ${causeMessage}`);
+    this.name = 'BrainContractError';
+  }
+}
+
+/**
+ * Every requested task in a batch must receive exactly one verdict. Semantic
+ * failures like this get the same single correction attempt as invalid JSON,
+ * so a hallucinated task id cannot silently skip or duplicate a decision.
+ */
+export function validateReviewCoverage(tasks: { id: string }[], verdicts: Verdict[]): Verdict[] {
+  const expected = new Set(tasks.map((task) => task.id));
+  const seen = new Set<string>();
+  for (const verdict of verdicts) {
+    if (!expected.has(verdict.taskId)) throw new Error(`unexpected task id ${verdict.taskId}`);
+    if (seen.has(verdict.taskId)) throw new Error(`duplicate verdict for ${verdict.taskId}`);
+    seen.add(verdict.taskId);
+  }
+  const missing = [...expected].filter((id) => !seen.has(id));
+  if (missing.length > 0) throw new Error(`missing verdicts for ${missing.join(', ')}`);
+  return verdicts;
+}
+
 import crypto from 'node:crypto';
 import { getDb } from '../core/state.js';
 import { SessionManager } from '../sessions/manager.js';

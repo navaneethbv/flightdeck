@@ -4,6 +4,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
+import { getDb, now } from '../../src/core/state.js';
 import { makeRepo } from '../helpers.js';
 
 interface StartedServer {
@@ -97,6 +98,47 @@ function rawRequest(port: number, method: string, requestTarget: string, headers
 }
 
 describe('Web GUI Server', () => {
+  it('blanks spend for a claimed session while keeping the stored telemetry', async () => {
+    const fixture = makeRepo();
+    const { server, port, token } = await startServer({ projectRoot: fixture.root });
+
+    try {
+      const sm = new SessionManager(fixture.root);
+      const worker = sm.createSession({
+        name: 'w1', harness: 'claude', cwd: fixture.root, policy: 'child',
+      });
+      getDb(fixture.root)
+        .prepare("UPDATE sessions SET status = 'running', claimed_at = ? WHERE id = ?")
+        .run(now(), worker.id);
+      getDb(fixture.root)
+        .prepare(
+          'INSERT INTO session_telemetry (session_id, model, input_tokens, output_tokens, cost_usd, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        )
+        .run(worker.id, 'claude-opus-5', 100, 50, 0.05, now());
+
+      const res = await fetch(`${base(port)}/api/state`, authed(token));
+      const state = (await res.json()) as {
+        sessions: { id: string; claimedAt: number | null; telemetry: { model: string | null; costUsd: number | null; inputTokens: number | null } }[];
+      };
+      const projected = state.sessions.find((s) => s.id === worker.id);
+      expect(projected?.claimedAt).not.toBeNull();
+      expect(projected?.telemetry.model).toBe('claude-opus-5');
+      expect(projected?.telemetry.costUsd).toBeNull();
+      expect(projected?.telemetry.inputTokens).toBeNull();
+
+      // The stored row is untouched, so historical spend survives the claim.
+      const db = getDb(fixture.root);
+      const stored = db
+        .prepare('SELECT input_tokens, cost_usd FROM session_telemetry WHERE session_id = ?')
+        .get(worker.id) as { input_tokens: number; cost_usd: number };
+      expect(stored.input_tokens).toBe(100);
+      expect(stored.cost_usd).toBe(0.05);
+    } finally {
+      await server.stop();
+      fixture.cleanup();
+    }
+  });
+
   it('serves static UI assets and API state over HTTP', async () => {
     const fixture = makeRepo();
     const { server, port, token } = await startServer({ projectRoot: fixture.root });

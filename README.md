@@ -98,7 +98,11 @@ deck session start bugfix-123 --harness gemini --worktree-new bugfix-branch --he
 
 ### 3. Launch the web dashboard
 ```bash
-# Opens the real-time 3-column dashboard in your default browser at http://127.0.0.1:4173
+# Opens the real-time 3-column dashboard in your default browser.
+# deck ui prints the URL with a per-process capability token embedded in the
+# fragment, e.g. http://127.0.0.1:4173/#token=..., and the dashboard stays
+# behind a login screen until the token is presented. Every /api/* request
+# must carry it; static assets load without it so the page can show the gate.
 deck ui
 ```
 
@@ -109,6 +113,17 @@ deck argus init vector-search --template feature --title "Implement Vector Searc
 
 # Start the Argus fleet manager loop in the foreground
 deck argus start --name vector-search --mission vector-search-mission --pulse 30s --children 4
+
+# Select a Codex brain with an OpenCode worker, budget, and models
+deck argus start \
+  --name codex-opencode \
+  --mission <note-id> \
+  --brain-harness codex \
+  --brain-plan-model gpt-5.6-sol \
+  --brain-review-model gpt-5.6-terra \
+  --worker-harness opencode \
+  --budget-window 2h \
+  --budget-max-tokens 250000
 ```
 
 ---
@@ -136,9 +151,57 @@ deck argus start --name vector-search --mission vector-search-mission --pulse 30
 | Command | Description |
 | :--- | :--- |
 | `deck argus init <name> [options]` | Scaffold a Mission note (`--template <feature\|refactor\|audit\|bugfix>`, `--title <title>`) |
-| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`) |
+| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`, `--conventions <note-id>`) |
 | `deck argus status [id] [--json]` | View fleet hierarchy, active children, and pulse progress |
 | `deck argus stop <id>` | Stop an Argus fleet and terminate all child subagents |
+| `deck argus budget <id> [--json]` | Show brain token spend, review queue depth, and the next rolling reset |
+
+### Argus behavior notes
+
+- `--conventions <note-id>` binds a project conventions note into every plan, answer, and `task_get` call.
+- Reported work runs objective gates first (tier 0); a failure returns the task to the same worker session in the same worktree for a revision, up to `--max-attempts`.
+- Review is two-tier: tier 1 (tier `brain-review-model`) sees only summaries and diffstat, and tier 2 (tier `brain-plan-model`) may read bounded, non-secret files from the worker worktree only when `need_files` is returned.
+- The token budget degrades by spend: below 60% reviews one task at a time, 60-80% batches four, 80-95% batches everything once four tasks queue or a task ages 30 minutes, and at or above 95% reviews pause. `force-review` may ignore the pause and batching below 100% but never the ceiling.
+- Worker questions are answered independently of the mission pulse, so `ask_manager` is not delayed by a long `--pulse`.
+
+### Fleet Window & Controls
+| Command | Description |
+| :--- | :--- |
+| `deck fleet` | Create the tmux window, reconcile worker panes, and attach |
+| `deck fleet console` | Interactive control pane with selectable workers and tasks |
+| `deck fleet claim <session-id> [--json]` | Take over a worker in its pane |
+| `deck fleet release <session-id> [--resume] [--json]` | End a claim and return the pane to the log |
+| `deck fleet kill <session-id> [--yes] [--json]` | Stop a worker and block its active task while preserving the worktree |
+| `deck fleet worker start --argus <id> [--json]` | Spawn one worker for the highest-priority dispatchable task |
+| `deck fleet override accept\|reject\|unblock\|prioritize <task-id> [reason] --argus <id> [--json]` | Human overrides of brain decisions |
+| `deck fleet override force-review --argus <id> [--json]` | Drain the review queue now, below the budget ceiling |
+
+Every console action calls the same `FleetActions` service as its CLI equivalent.
+
+Console keys (Tab switches between the Workers and Tasks lists, arrows move the selection):
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Switch worker/task focus |
+| Up/Down | Move the current selection |
+| `c` | Claim selected worker |
+| `r` | Release selected worker without headless resume |
+| `R` | Release selected worker and resume headless |
+| `k` | Confirm, then kill selected worker and block its task |
+| `n` | Spawn a worker for the next dispatchable task |
+| `a` | Accept selected task |
+| `x` | Enter a reject reason, then reject selected task |
+| `u` | Unblock selected task |
+| `p` | Prioritize selected task |
+| `f` | Force review for the selected fleet |
+| `q` | Quit only when no confirmation or text input is active |
+
+The console drives a single fleet.
+With zero or more than one Argus row it shows an error and directs the operator to the CLI with `--argus <id>`.
+Pressing `n` spawns a worker for the highest-priority dispatchable task whether or not a worker is currently selected.
+`deck fleet kill <session-id>` prompts for confirmation on a terminal and requires `--yes` in a non-interactive process.
+Kill preserves the worktree and blocks the active task so a human can inspect it before unblocking.
+Task overrides require an explicit `--argus <id>` when more than one fleet exists; the newest fleet is never guessed.
 
 ### Watchdog Supervisor
 | Command | Description |
@@ -180,8 +243,9 @@ deck argus start --name vector-search --mission vector-search-mission --pulse 30
 ### User Interfaces & Diagnostics
 | Command | Description |
 | :--- | :--- |
-| `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane |
+| `deck ui` / `deck web [--port <port>]` | Launch the interactive Flightdeck Web Control Plane (protected by a capability token printed with the URL) |
 | `deck tui` | Open the interactive 3-tab terminal dashboard |
+| `deck login [harness...]` | Authenticate your coding-agent harnesses (`claude`, `codex`, `opencode`, `gemini`); `--check` reports auth status without running a login flow |
 | `deck doctor [--fix]` | Run environment diagnostics and repair state issues |
 | `deck repair` | Self-heal project directories, dead sessions, and worktree references |
 | `deck config set-default-harness <harness>` | Set global default harness (`gemini`, `claude`, `codex`, `opencode`) |

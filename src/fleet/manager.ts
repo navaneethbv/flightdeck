@@ -153,14 +153,33 @@ export class FleetManager {
     this.tmux.setPaneTitle(paneId, paneTitle(this.fleetSessionOf(sessionId)));
   }
 
+  /**
+   * Stops one worker's process only. It never mutates tasks or removes the
+   * worktree, so the human caller (not this method) decides what happens to
+   * the task and the worktree.
+   */
+  async stopWorker(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`session "${sessionId}" not found`);
+    if (session.policy === 'brain' || session.policy === 'manager') {
+      throw new Error(`session "${sessionId}" is not a worker`);
+    }
+    await this.sessions.stopSession(sessionId);
+  }
+
   /** Ends a claim. Returns the pane to tailing, or restarts the worker headless. */
   async release(sessionId: string, opts: { resume?: boolean } = {}): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`session "${sessionId}" not found`);
 
+    // Atomically clear the claim and record the headless process as stopped
+    // before the pane is respawned, so no stale close callback or polling pass
+    // can resurrect a released session as running.
     getDb(this.projectRoot)
-      .prepare('UPDATE sessions SET claimed_at = NULL WHERE id = ?')
-      .run(sessionId);
+      .prepare(
+        "UPDATE sessions SET claimed_at = NULL, status = 'stopped', pid = NULL, ended_at = ?, last_activity_at = ? WHERE id = ?"
+      )
+      .run(now(), now(), sessionId);
 
     const paneId = this.paneFor(sessionId);
     if (paneId) {
@@ -173,6 +192,7 @@ export class FleetManager {
     }
 
     if (opts.resume) {
+      // restartSession performs the later transition back to running.
       await this.sessions.restartSession(sessionId, { headless: true, waitForExit: false });
     }
   }

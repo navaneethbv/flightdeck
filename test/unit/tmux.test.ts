@@ -31,6 +31,28 @@ describe('Tmux', () => {
     ]);
   });
 
+  it('creates a detached session with an explicit window size when one is given', () => {
+    const calls: string[][] = [];
+    const tmux = new Tmux((args) => {
+      calls.push(args);
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    tmux.newSession('fd-1', '/tmp/p', ['node', 'cli.js'], { width: 200, height: 50 });
+    expect(calls[0]).toEqual([
+      'new-session', '-d', '-s', 'fd-1', '-c', '/tmp/p', '-x', '200', '-y', '50', '--', 'node', 'cli.js',
+    ]);
+  });
+
+  it('omits the size flags when no size is given', () => {
+    const calls: string[][] = [];
+    const tmux = new Tmux((args) => {
+      calls.push(args);
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    tmux.newSession('fd-1', '/tmp/p', ['node', 'cli.js']);
+    expect(calls[0]).toEqual(['new-session', '-d', '-s', 'fd-1', '-c', '/tmp/p', '--', 'node', 'cli.js']);
+  });
+
   it('returns the pane id when splitting', () => {
     const { run, calls } = fakeRunner([{ status: 0, stdout: '%7\n', stderr: '' }]);
     const paneId = new Tmux(run).splitWindow('fd-abc', '/repo', ['deck', 'session', 'follow', 's1']);

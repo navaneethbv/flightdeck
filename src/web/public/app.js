@@ -11,14 +11,82 @@ let capabilityToken = '';
 let pendingConfirmResolve = null;
 let actedConfirmId = null;
 
+/** sessionStorage key for the capability token; kept per tab session. */
+const TOKEN_STORAGE_KEY = 'flightdeck.capabilityToken';
+
+function readTokenFromUrl() {
+  try {
+    const m = /[#&]token=([^&]+)/.exec(window.location.href);
+    return m ? decodeURIComponent(m[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Drop the token fragment so it does not linger in history, referrers, or a bookmark. */
+function stripTokenFromUrl() {
+  try {
+    const raw = window.location.href;
+    const tokenIndex = raw.indexOf('token=');
+    if (tokenIndex === -1) return;
+    const beforeToken = raw.slice(0, tokenIndex);
+    const afterToken = raw.slice(tokenIndex + 6);
+    const nextSep = afterToken.search(/[&#]/);
+    const rest = nextSep === -1 ? '' : afterToken.slice(nextSep + 1);
+
+    let clean = '';
+    const lastChar = beforeToken.slice(-1);
+    if (lastChar === '#' || lastChar === '&' || lastChar === '?') {
+      const prefix = beforeToken.slice(0, -1);
+      clean = rest ? `${prefix}${lastChar}${rest}` : prefix;
+    } else {
+      clean = rest ? `${beforeToken}${rest}` : beforeToken;
+    }
+    window.history.replaceState(null, '', clean || '/');
+  } catch {
+    // A non-browser context (tests) has no history to rewrite.
+  }
+}
+
+function loadStoredToken() {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function storeToken(token) {
+  try {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // A non-browser context has no storage to persist to.
+  }
+}
+
+function clearStoredToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * The capability token is minted per server session and printed with the URL.
- * It rides the URL fragment, which is never sent to the server, so the client
- * reads it here and presents it on every /api/* call.
+ * It arrives in the URL fragment, which is never sent to the server, then is
+ * moved to sessionStorage so a refresh keeps the dashboard unlocked without
+ * the token lingering in the URL. Every /api/* call presents it afterwards.
  */
 function readCapabilityToken() {
-  const m = /[#&]token=([^&]+)/.exec(window.location.href);
-  capabilityToken = m ? decodeURIComponent(m[1]) : '';
+  const fromUrl = readTokenFromUrl();
+  if (fromUrl) {
+    capabilityToken = fromUrl;
+    storeToken(fromUrl);
+    stripTokenFromUrl();
+    return;
+  }
+  capabilityToken = loadStoredToken();
 }
 
 /** Headers for /api/* calls: the token rides the X-Flightdeck-Token header. */
@@ -113,6 +181,10 @@ function relativeTime(ms) {
 async function fetchState() {
   try {
     const res = await fetch('/api/state', { headers: authedHeaders() });
+    if (res.status === 401) {
+      handleUnauthorized();
+      return;
+    }
     if (!res.ok) {
       showError(`state request failed: ${res.status}`);
       return;
@@ -123,6 +195,20 @@ async function fetchState() {
   } catch (err) {
     showError(err.message);
   }
+}
+
+/**
+ * The server rejected the presented capability token, which after a server
+ * restart is the stale token the tab cached. Drop it and return to the login
+ * screen rather than leaving the dashboard stuck behind a permanent error
+ * banner.
+ */
+function handleUnauthorized() {
+  capabilityToken = '';
+  clearStoredToken();
+  stopDashboard();
+  showLogin();
+  showLoginError('That capability token is no longer valid. Enter the token printed by deck ui.');
 }
 
 function showError(message) {
@@ -141,15 +227,109 @@ function responseError(payload, res) {
   return payload.error ?? `HTTP ${res.status}`;
 }
 
+// ------------------------------------------------------- dashboard poll loop
+
+let pollTimer = null;
+let eventSource = null;
+
+/** Tear down the poll loop and the SSE stream the dashboard runs on. */
+function stopDashboard() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  if (eventSource !== null) {
+    try {
+      eventSource.close();
+    } catch {
+      // A test shim may model EventSource without close().
+    }
+    eventSource = null;
+  }
+}
+
 function initSSE() {
-  const evt = new EventSource(eventsUrl());
-  evt.onmessage = (e) => {
+  eventSource = new EventSource(eventsUrl());
+  eventSource.onmessage = (e) => {
     try {
       if (JSON.parse(e.data).type === 'update') fetchState();
     } catch {
       // A malformed frame is not worth surfacing; the next poll recovers.
     }
   };
+}
+
+// ----------------------------------------------------------------- login gate
+
+function showLogin() {
+  const overlay = el('login-overlay');
+  if (!overlay) return;
+  hideLoginError();
+  overlay.classList.remove('hidden');
+  el('login-token')?.focus();
+}
+
+function hideLogin() {
+  el('login-overlay')?.classList.add('hidden');
+}
+
+function showLoginError(message) {
+  const error = el('login-error');
+  if (error) {
+    error.textContent = message;
+    error.classList.remove('hidden');
+  }
+}
+
+function hideLoginError() {
+  el('login-error')?.classList.add('hidden');
+}
+
+/** Clear the capability token and return to the login screen. */
+function lockDashboard() {
+  capabilityToken = '';
+  clearStoredToken();
+  stopDashboard();
+  showLogin();
+}
+
+/**
+ * Present the capability token and unlock the dashboard. The token is
+ * validated against the server before it is accepted, so a mistyped or wrong
+ * token fails on the login screen rather than surfacing as a 401 mid-session.
+ */
+async function submitLogin(token) {
+  const value =
+    typeof token === 'string' ? token.trim() : String(el('login-token')?.value ?? '').trim();
+  if (!value) {
+    showLoginError('Enter the capability token printed by deck ui.');
+    return;
+  }
+  let res;
+  try {
+    res = await fetch('/api/state', { headers: { 'X-Flightdeck-Token': value } });
+  } catch {
+    showLoginError('Could not reach the control plane. Is deck ui still running?');
+    return;
+  }
+  if (!res.ok) {
+    capabilityToken = '';
+    clearStoredToken();
+    showLoginError('That capability token was rejected. Check the token printed by deck ui.');
+    return;
+  }
+  capabilityToken = value;
+  storeToken(value);
+  hideLogin();
+  startDashboard();
+}
+
+/** The dashboard boot path once a capability token is present. */
+function startDashboard() {
+  stopDashboard();
+  fetchState();
+  initSSE();
+  pollTimer = setInterval(fetchState, 4000);
 }
 
 // ----------------------------------------------------------------- rendering
@@ -310,6 +490,54 @@ function renderLaws(fleet) {
   `;
 }
 
+function createSessionCard(s, hung) {
+  const card = document.createElement('div');
+  card.className = 'session-card';
+  card.dataset.id = s.id;
+
+  const status = hung.has(s.id) ? 'Hung' : s.status;
+  const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
+  const claimed = s.claimedAt !== null && s.claimedAt !== undefined;
+  const telemetry = s.telemetry ?? {};
+  const model = text(telemetry.model);
+  // A claimed session reports no usage from its headless run, so its spend
+  // renders as the inert dash rather than a stale or fabricated number.
+  const spend = claimed ? NO_VALUE : formatSpend(telemetry.costUsd);
+  const progress = formatProgress(telemetry.progress);
+  const telemetryNote =
+    model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
+      ? 'Model, spend, and progress were not reported.'
+      : 'Model, spend, and progress as reported by the harness.';
+  const claimBadge = claimed
+    ? '<span class="session-claim-badge" title="A human has taken over this worker">CLAIMED</span>'
+    : '';
+
+  card.innerHTML = `
+    <div class="session-card-header">
+      <div class="session-card-name-row">
+        <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
+        <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        ${claimBadge}
+      </div>
+      <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
+    </div>
+    <div class="session-card-meta">
+      <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
+        <span class="status-dot">●</span> ${escapeHtml(status)}
+      </span>
+      <span class="session-model-badge" title="${escapeHtml(telemetryNote)}">
+        ${escapeHtml(model)} · ${escapeHtml(spend)}
+      </span>
+    </div>
+    <div class="session-card-footer text-dim">
+      ${escapeHtml(where)} · ${escapeHtml(relativeTime(s.lastActivityAt))}
+    </div>
+  `;
+
+  card.addEventListener('click', () => openLogsModal(s.id, s.name));
+  return card;
+}
+
 /**
  * One card per real session. Model, spend, and progress come from
  * session_telemetry; whatever the harness did not report renders as a dash.
@@ -331,44 +559,7 @@ function renderFleet() {
 
   container.innerHTML = '';
   for (const s of sessions) {
-    const card = document.createElement('div');
-    card.className = 'session-card';
-    card.dataset.id = s.id;
-
-    const status = hung.has(s.id) ? 'Hung' : s.status;
-    const where = s.worktree ? s.worktree.split('/').pop() : 'project root';
-    const telemetry = s.telemetry ?? {};
-    const model = text(telemetry.model);
-    const spend = formatSpend(telemetry.costUsd);
-    const progress = formatProgress(telemetry.progress);
-    const telemetryNote =
-      model === NO_VALUE && spend === NO_VALUE && progress === NO_VALUE
-        ? 'Model, spend, and progress were not reported.'
-        : 'Model, spend, and progress as reported by the harness.';
-
-    card.innerHTML = `
-      <div class="session-card-header">
-        <div class="session-card-name-row">
-          <span class="avatar-xs harness-${escapeHtml(s.harness)}"></span>
-          <span class="session-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
-        </div>
-        <span class="session-percent" title="${escapeHtml(telemetryNote)}">${escapeHtml(progress)}</span>
-      </div>
-      <div class="session-card-meta">
-        <span class="session-status-badge ${escapeHtml(status.toLowerCase())}">
-          <span class="status-dot">●</span> ${escapeHtml(status)}
-        </span>
-        <span class="session-model-badge" title="${escapeHtml(telemetryNote)}">
-          ${escapeHtml(model)} · ${escapeHtml(spend)}
-        </span>
-      </div>
-      <div class="session-card-footer text-dim">
-        ${escapeHtml(where)} · ${escapeHtml(relativeTime(s.lastActivityAt))}
-      </div>
-    `;
-
-    card.addEventListener('click', () => openLogsModal(s.id, s.name));
-    container.appendChild(card);
+    container.appendChild(createSessionCard(s, hung));
   }
 }
 
@@ -669,12 +860,22 @@ function setupEventHandlers() {
   });
 
   el('btn-refresh')?.addEventListener('click', fetchState);
+
+  el('btn-lock')?.addEventListener('click', lockDashboard);
+  el('btn-login')?.addEventListener('click', () => submitLogin());
+  el('login-token')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitLogin();
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   readCapabilityToken();
   setupEventHandlers();
-  fetchState();
-  initSSE();
-  setInterval(fetchState, 4000);
+  if (capabilityToken) {
+    startDashboard();
+  } else {
+    // No token in the URL or session storage: the dashboard stays locked
+    // behind the login screen until the user presents the capability token.
+    showLogin();
+  }
 });

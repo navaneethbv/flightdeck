@@ -93,13 +93,19 @@ When constructing an `McpContext` outside the MCP server, do not hand out `isMan
 Each declares binary name, detection, profile env vars, interactive vs headless argv, and how to write its MCP config.
 Adding a harness means adding an adapter plus extending `HarnessKind` in [src/core/types.ts](src/core/types.ts).
 
-The spec also requires adapters to extract per-session telemetry (model, token usage) from harness output.
-That capability is specified but not yet built.
+Adapters also extract per-session telemetry (model, token usage) from harness output via their `telemetry` and `renderLine` parsers ([telemetry.ts](src/sessions/telemetry.ts)).
+Each parser is harness-specific: claude reads `result` events, codex reads `turn.completed`, and opencode reads `step_finish` plus a model id on stderr.
+Unknown fields stay null and render blank; they are never defaulted or averaged.
 
 ### Argus
 
-[src/argus/manager.ts](src/argus/manager.ts) creates a manager session bound to a Mission note, then loops: reread the mission, evaluate children, spawn missing child worktrees and headless sessions up to `child_limit`, write rows to the progress table.
+[src/argus/manager.ts](src/argus/manager.ts) creates a manager session bound to a Mission note, then loops: plan the mission into task board rows, dispatch children into isolated worktrees, run objective gates on reported work, and invoke a short-lived `policy: 'brain'` session for planning, review, and worker questions.
+The brain harness is `claude` or `codex` and worker harnesses are `opencode` or `gemini`, both selectable via `deck argus start` and persisted on the `argus` row.
+A rolling token budget tiers review batching and pauses the queue near the ceiling.
+Failed gates or review rejections return the task to the same worker session in the same worktree for a revision, up to `max_attempts_per_task`.
+Review is two-tier: tier 1 sees only summaries and diffstat, while tier 2 may read bounded, non-secret files from the worker worktree via [review-files.ts](src/argus/review-files.ts).
 Children run with `policy: 'child'` and never spawn a further generation.
+Worker questions and `report_done` wake the scheduler independently of the mission pulse.
 
 ### Playbooks
 

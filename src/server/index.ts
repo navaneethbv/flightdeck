@@ -233,10 +233,26 @@ export function createWebServer(opts: WebServerOptions = {}): {
     return {
       projectRoot,
       projectName: path.basename(projectRoot),
-      sessions: sm.list().map((s) => ({
-        ...publicSession(s),
-        telemetry: telemetryStore.get(s.id),
-      })),
+      sessions: sm.list().map((s) => {
+        const session = publicSession(s);
+        const telemetry = telemetryStore.get(s.id);
+        // A claimed session is owned by a human who has not reported usage
+        // through the headless harness. Its stored telemetry is historical
+        // data from before the claim, so the projection keeps model and
+        // progress but blanks the token counters and cost: showing the stale
+        // spend would look like the claimed session is still spending.
+        const projected =
+          s.claimedAt !== null && telemetry
+            ? {
+                ...telemetry,
+                inputTokens: null,
+                outputTokens: null,
+                cachedTokens: null,
+                costUsd: null,
+              }
+            : telemetry;
+        return { ...session, telemetry: projected };
+      }),
       argus: fleets,
       notes: notesStore.list(),
       tables: tablesStore.listTables(),

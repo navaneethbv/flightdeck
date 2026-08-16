@@ -890,6 +890,19 @@ body {
   white-space: nowrap;
 }
 
+/* A human-owned worker is visibly claimed and reports no live spend. */
+.session-claim-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
 /* Unmeasured values render inert rather than plausible. */
 .session-percent {
   font-size: 11px;
@@ -1144,6 +1157,75 @@ body {
   cursor: pointer;
 }
 .btn-ghost:hover { color: var(--text-main); }
+
+/* Login gate */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(9, 10, 12, 0.92);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-overlay.hidden {
+  display: none;
+}
+
+.login-card {
+  width: 400px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  box-shadow: 0 20px 40px -16px rgba(0, 0, 0, 0.8);
+}
+
+.login-icon {
+  font-size: 26px;
+  text-align: center;
+}
+
+.login-title {
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--text-main);
+}
+
+.login-subtitle {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.login-subtitle code {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+}
+
+.login-input {
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+.login-error {
+  font-size: 12.5px;
+  color: var(--accent-red);
+  text-align: center;
+}
+
+.login-button {
+  width: 100%;
+}
+
 
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

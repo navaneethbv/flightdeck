@@ -3,6 +3,7 @@ import { ToolRegistry } from '../../src/mcp/tools.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { QuestionQueue } from '../../src/argus/questions.js';
 import { SessionManager } from '../../src/sessions/manager.js';
+import { NotesStore } from '../../src/notes/store.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo } from '../helpers.js';
 
@@ -52,6 +53,37 @@ describe('worker tools', () => {
       const result = (await registry.call('task_get', {})) as Record<string, unknown>;
       expect(result.id).toBe(task.id);
       expect(result.spec).toBe('do a');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('task_get returns the project conventions note bound to the fleet', async () => {
+    const fixture = makeRepo();
+    try {
+      seedArgus(fixture.root);
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'worker-1',
+        harness: 'opencode',
+        cwd: fixture.root,
+        policy: 'child',
+        argusParent: 'a1',
+      });
+      const notes = new NotesStore(fixture.root);
+      const conventions = notes.createNote('conventions', 'Use strict ESM and run npm test.');
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET conventions_note_id = ? WHERE id = ?')
+        .run(conventions.id, 'a1');
+      const board = new TaskBoard(fixture.root);
+      const [task] = board.create('a1', [{ title: 'a', spec: 'do a', dependsOn: [] }]);
+      board.assign(task.id, worker.id);
+
+      const registry = new ToolRegistry(childContext(fixture.root, worker.id));
+      const result = await registry.call('task_get', {});
+      expect(result).toMatchObject({
+        id: task.id,
+        projectConventions: 'Use strict ESM and run npm test.',
+      });
     } finally {
       fixture.cleanup();
     }

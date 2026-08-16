@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { cliEntryPath } from '../core/cliEntry.js';
 import { loadConfig } from '../core/config.js';
@@ -36,15 +37,43 @@ export interface HarnessAdapter {
   telemetry(line: string): TelemetryExtraction | null;
   /** Render one line into readable log text, or null to suppress it. */
   renderLine(line: string, stream: 'stdout' | 'stderr'): string | null;
+  /** The harness's interactive login subcommand (e.g. `claude login`). */
+  loginArgs(): string[];
+  /**
+   * Credential files a completed OAuth session leaves behind. Presence is a
+   * best-effort "already logged in" signal; absence only means "run login",
+   * never that login is impossible. Honours profile dirs and per-harness env
+   * overrides so a custom config dir is checked in the right place.
+   */
+  authFiles(env?: NodeJS.ProcessEnv): string[];
 }
 
+/**
+ * Whether `binary` resolves through PATH. The `which` command is tried first
+ * for exact OS semantics; when PATH is trimmed so hard that `which` itself is
+ * not resolvable (isolated tests, minimal containers), a direct scan of each
+ * PATH entry for an executable file stands in.
+ */
 function which(binary: string): boolean {
   try {
     execFileSync('which', [binary], { stdio: 'pipe' });
     return true;
   } catch {
-    return false;
+    // `which` missing or it reported not found; scan PATH below.
   }
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      const candidate = path.join(dir, binary);
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile()) continue;
+      if (process.platform !== 'win32' && (stat.mode & 0o111) === 0) continue;
+      return true;
+    } catch {
+      // keep scanning
+    }
+  }
+  return false;
 }
 
 function mcpServerArgs(session: Session, extraEnv?: Record<string, string>): { command: string; args: string[]; env: Record<string, string> } {
@@ -115,6 +144,12 @@ const claude: HarnessAdapter = {
   writeMcpConfig(session, worktreeDir, extraEnv) {
     writeJson(path.join(worktreeDir, '.mcp.json'), mcpJsonShape(session, worktreeDir, extraEnv));
   },
+  loginArgs: () => ['login'],
+  authFiles(env) {
+    const dir =
+      env?.CLAUDE_CONFIG_DIR ?? loadConfig().profileDir.claude ?? path.join(env?.HOME ?? os.homedir(), '.claude');
+    return [path.join(dir, '.credentials.json')];
+  },
 };
 
 const codex: HarnessAdapter = {
@@ -129,19 +164,29 @@ const codex: HarnessAdapter = {
     return { ...env, ...extraEnv };
   },
   interactiveArgs: () => [],
-  headlessArgs: (prompt, _opts) => {
-    const args = ['exec', '--json', prompt];
+  headlessArgs: (prompt, opts) => {
+    const args = ['exec', '--json'];
+    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
+    if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   sessionArgs: (prompt, opts) => {
-    const args = ['exec', '--json', prompt];
+    const args = ['exec', '--json'];
+    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
     if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   telemetry: parseCodexLine,
   renderLine: renderCodexLine,
   writeMcpConfig(session, worktreeDir, extraEnv) {
     writeJson(path.join(worktreeDir, 'mcp.json'), mcpJsonShape(session, worktreeDir, extraEnv));
+  },
+  loginArgs: () => ['login'],
+  authFiles(env) {
+    const dir = env?.CODEX_HOME ?? loadConfig().profileDir.codex ?? path.join(env?.HOME ?? os.homedir(), '.codex');
+    return [path.join(dir, 'auth.json')];
   },
 };
 
@@ -158,14 +203,17 @@ const opencode: HarnessAdapter = {
   },
   interactiveArgs: () => [],
   headlessArgs: (prompt, opts) => {
-    const args = ['run', prompt];
-    if (opts.autonomy) args.push('--permission', 'allow');
+    const args = ['run'];
+    if (opts.autonomy) args.push('--auto');
+    if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   sessionArgs: (prompt, opts) => {
-    const args = ['run', '--format', 'json', '--print-logs', prompt];
-    if (opts.autonomy) args.push('--permission', 'allow');
+    const args = ['run', '--format', 'json', '--print-logs'];
+    if (opts.autonomy) args.push('--auto');
     if (opts.model) args.push('--model', opts.model);
+    args.push('--', prompt);
     return args;
   },
   telemetry: parseOpencodeLine,
@@ -183,6 +231,13 @@ const opencode: HarnessAdapter = {
       },
     };
     writeJson(path.join(worktreeDir, 'opencode.json'), cfg);
+  },
+  loginArgs: () => ['auth', 'login'],
+  authFiles(env) {
+    const profileDir = loadConfig().profileDir.opencode;
+    if (profileDir) return [path.join(profileDir, 'opencode', 'auth.json')];
+    const base = env?.XDG_DATA_HOME ?? path.join(env?.HOME ?? os.homedir(), '.local', 'share');
+    return [path.join(base, 'opencode', 'auth.json')];
   },
 };
 
@@ -219,6 +274,15 @@ const gemini: HarnessAdapter = {
     const geminiDir = path.join(worktreeDir, '.gemini');
     fs.mkdirSync(geminiDir, { recursive: true });
     writeJson(path.join(geminiDir, 'settings.json'), mcpJsonShape(session, worktreeDir, extraEnv));
+  },
+  loginArgs: () => ['login'],
+  authFiles(env) {
+    const dir =
+      env?.GEMINI_CONFIG_DIR ??
+      env?.GEMINI_HOME ??
+      loadConfig().profileDir.gemini ??
+      path.join(env?.HOME ?? os.homedir(), '.gemini');
+    return [path.join(dir, 'auth.json')];
   },
 };
 

@@ -18,6 +18,14 @@ export function getDb(projectRoot: string): DatabaseSync {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
+  // WAL mode lets readers and writers proceed without blocking each other,
+  // but a second writer still hits SQLITE_BUSY immediately if it collides
+  // with an in-progress write, absent a busy timeout. Multiple real
+  // processes (the manager, worker sessions, brain invocations) each open
+  // their own connection to this same file and write concurrently, so
+  // without this a colliding writer throws "database is locked" instead of
+  // waiting a few milliseconds for the other transaction to commit.
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA foreign_keys = ON;');
   migrate(db);
   dbCache.set(real, db);
@@ -103,7 +111,8 @@ function migrate(db: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'stopped',
       manager_session_id TEXT,
       created_at INTEGER NOT NULL,
-      last_pulse_at INTEGER
+      last_pulse_at INTEGER,
+      conventions_note_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS integration_cache (
@@ -151,7 +160,8 @@ function migrate(db: DatabaseSync): void {
       verdict_reason TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 0
+      priority INTEGER NOT NULL DEFAULT 0,
+      review_queued_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS questions (
@@ -162,7 +172,8 @@ function migrate(db: DatabaseSync): void {
       answer TEXT,
       faq_key TEXT,
       created_at INTEGER NOT NULL,
-      answered_at INTEGER
+      answered_at INTEGER,
+      failed_at INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_root);
@@ -189,10 +200,27 @@ function migrate(db: DatabaseSync): void {
     'max_attempts_per_task INTEGER NOT NULL DEFAULT 3',
     'max_tasks INTEGER NOT NULL DEFAULT 100',
     'question_timeout_sec INTEGER NOT NULL DEFAULT 120',
+    'conventions_note_id TEXT',
   ];
   for (const col of argusColumns) {
     try {
       db.exec(`ALTER TABLE argus ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
+  const questionColumns = ['failed_at INTEGER'];
+  for (const col of questionColumns) {
+    try {
+      db.exec(`ALTER TABLE questions ADD COLUMN ${col};`);
+    } catch {
+      // column already exists
+    }
+  }
+  const taskColumns = ['review_queued_at INTEGER'];
+  for (const col of taskColumns) {
+    try {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${col}`);
     } catch {
       // column already exists
     }

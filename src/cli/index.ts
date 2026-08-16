@@ -5,6 +5,7 @@ import { registerNotes, registerTables, registerMessages } from './commands/stor
 import { registerPlaybooks, registerIntegrations, registerSsh } from './commands/tools.js';
 import { registerArgus } from './commands/argus.js';
 import { registerMcp } from './commands/mcp.js';
+import { registerLogin } from './commands/login.js';
 import { registerConfig } from './commands/config.js';
 import { registerDoctor } from './commands/doctor.js';
 import { registerWatchdog } from './commands/watchdog.js';
@@ -29,6 +30,7 @@ registerIntegrations(program);
 registerSsh(program);
 registerArgus(program);
 registerMcp(program);
+registerLogin(program);
 registerConfig(program);
 registerDoctor(program);
 registerWatchdog(program);

@@ -1,5 +1,8 @@
 export type HarnessKind = 'claude' | 'codex' | 'opencode' | 'gemini';
 
+export type BrainHarness = Extract<HarnessKind, 'claude' | 'codex'>;
+export type WorkerHarness = Extract<HarnessKind, 'opencode' | 'gemini'>;
+
 export const HARNESSES: HarnessKind[] = ['claude', 'codex', 'opencode', 'gemini'];
 
 export function isHarnessKind(value: string): value is HarnessKind {
@@ -56,6 +59,7 @@ export interface Task {
   updatedAt: number;
   /** Higher dispatches first. Set by the human override surface. */
   priority: number;
+  reviewQueuedAt: number | null;
 }
 
 export interface Question {
@@ -67,6 +71,7 @@ export interface Question {
   faqKey: string | null;
   createdAt: number;
   answeredAt: number | null;
+  failedAt: number | null;
 }
 
 export interface Session {
@@ -103,6 +108,17 @@ export interface Argus {
   managerSessionId: string | null;
   createdAt: number;
   lastPulseAt: number | null;
+  brainHarness: BrainHarness;
+  brainPlanModel: string | null;
+  brainReviewModel: string | null;
+  workerHarnesses: WorkerHarness[];
+  budgetWindowSec: number;
+  budgetMaxTokens: number;
+  budgetCountCacheReads: boolean;
+  maxAttemptsPerTask: number;
+  maxTasks: number;
+  questionTimeoutSec: number;
+  conventionsNoteId: string | null;
 }
 
 export type IntegrationKind = 'jira' | 'github' | 'slack';

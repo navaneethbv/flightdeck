@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
 import { HARNESSES } from '../../core/types.js';
 import { adapters } from '../../sessions/harness.js';
 import { gitVersion } from '../../worktrees/manager.js';
@@ -36,6 +37,14 @@ function runDoctorChecks(root: string): { name: string; ok: boolean; detail: str
     const adapter = adapters[kind];
     const detected = adapter.detect();
     checks.push({ name: `harness:${kind}`, ok: detected, detail: detected ? `${adapter.binary} detected` : 'not installed' });
+    if (detected) {
+      const authenticated = adapter.authFiles().some((file) => fs.existsSync(file));
+      checks.push({
+        name: `auth:${kind}`,
+        ok: authenticated,
+        detail: authenticated ? 'authenticated' : 'not authenticated',
+      });
+    }
   }
   checks.push(tmuxCheck());
   const repo = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });

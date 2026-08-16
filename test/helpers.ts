@@ -25,7 +25,11 @@ export function makeRepo(): Fixture {
 
 export function makeFakeHarness(binName: string): { binDir: string; cleanup(): void } {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
-  const script = `#!/bin/bash\necho "fake ${binName} ran with: $@"\nexit 0\n`;
+  // Never echo "$@". The argv carries the brain prompt, and that prompt
+  // contains a JSON format example. `extractJson` takes the last balanced
+  // JSON object in the stream, so echoing argv returns a schema-valid plan
+  // and the manager dispatches real workers for a task nobody asked for.
+  const script = `#!/bin/bash\necho "flightdeck fake ${binName}" >&2\nexit 0\n`;
   fs.writeFileSync(path.join(binDir, binName), script, { mode: 0o755 });
   return {
     binDir,

@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDb, now } from '../../src/core/state.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { invokeBrain } from '../../src/argus/brain.js';
@@ -16,6 +18,8 @@ describe('brain sessions', () => {
   it('never writes an MCP config, so a brain can never hold a session token', async () => {
     const fixture = makeRepo();
     const harness = makeFakeHarness('claude');
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${harness.binDir}:${oldPath ?? ''}`;
     try {
       const manager = new SessionManager(fixture.root);
       const session = manager.createSession({
@@ -33,6 +37,7 @@ describe('brain sessions', () => {
       const fs = await import('node:fs');
       expect(fs.existsSync(`${fixture.root}/.mcp.json`)).toBe(false);
     } finally {
+      process.env.PATH = oldPath ?? '';
       harness.cleanup();
       fixture.cleanup();
     }
@@ -41,6 +46,13 @@ describe('brain sessions', () => {
   it('returns the brain stdout and records a brain-policy session', async () => {
     const fixture = makeRepo();
     const harness = makeFakeHarness('claude');
+    fs.writeFileSync(
+      path.join(harness.binDir, 'claude'),
+      '#!/bin/bash\necho "fake claude ran with: $@"\nexit 0\n',
+      { mode: 0o755 }
+    );
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${harness.binDir}:${oldPath ?? ''}`;
     try {
       seedArgus(fixture.root);
       const stdout = await invokeBrain(fixture.root, 'a1', {
@@ -57,6 +69,7 @@ describe('brain sessions', () => {
       expect(sessions).toHaveLength(1);
       expect(sessions[0].argusParent).toBe('a1');
     } finally {
+      process.env.PATH = oldPath ?? '';
       harness.cleanup();
       fixture.cleanup();
     }

@@ -26,10 +26,27 @@
         <button id="btn-refresh" class="btn-ghost" title="Refresh state">↻</button>
         <button id="btn-spectate-all" class="btn-ghost" title="Spectator Mode">☵</button>
         <button id="btn-theme-toggle" class="btn-ghost" title="Settings">⚙</button>
+        <button id="btn-lock" class="btn-ghost" title="Lock dashboard (clear capability token)">🔒</button>
       </div>
     </header>
 
     <div id="error-banner" class="error-banner hidden" role="alert"></div>
+
+    <!-- Login gate: the dashboard stays behind this until the user presents the
+         capability token printed by `deck ui`. -->
+    <div id="login-overlay" class="login-overlay hidden">
+      <div class="login-card">
+        <div class="login-icon">⚡</div>
+        <h2 class="login-title">Flightdeck Control Plane</h2>
+        <p class="login-subtitle">
+          This dashboard is protected by a capability token. Enter the token printed
+          next to the URL when you ran <code>deck ui</code>.
+        </p>
+        <input type="password" id="login-token" class="custom-input login-input" placeholder="Capability token" autocomplete="off" spellcheck="false" aria-label="Capability token" />
+        <p id="login-error" class="login-error hidden" role="alert"></p>
+        <button id="btn-login" class="btn-action primary login-button">Unlock dashboard</button>
+      </div>
+    </div>
 
     <!-- Main 3-Column Layout -->
     <div class="app-body">

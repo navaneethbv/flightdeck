@@ -38,6 +38,10 @@ function rowToTask(row: Record<string, unknown>): Task {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     priority: Number(row.priority ?? 0),
+    reviewQueuedAt:
+      row.review_queued_at === null || row.review_queued_at === undefined
+        ? null
+        : Number(row.review_queued_at),
   };
 }
 
@@ -153,12 +157,51 @@ export class TaskBoard {
    * tokens; only a clean gate run reaches the review queue.
    */
   recordGates(taskId: string, result: GateResult, diffstat: string): Task {
+    const current = this.get(taskId);
+    if (!current) throw new Error(`task "${taskId}" not found`);
+    if (current.status !== 'gating') {
+      throw new Error(`task "${taskId}" is ${current.status}, expected gating`);
+    }
     const failed =
       (result.testExitCode !== null && result.testExitCode !== 0) ||
       (result.lintExitCode !== null && result.lintExitCode !== 0);
     this.update(taskId, { gate_result: JSON.stringify(result), diffstat });
     if (failed) return this.toRevising(taskId, result.failureTail);
-    return this.update(taskId, { status: 'in_review' });
+    return this.update(taskId, { status: 'in_review', review_queued_at: now() });
+  }
+
+  /** Moves a reported task into the explicit gating state before gates run. */
+  beginGating(taskId: string): Task {
+    const task = this.get(taskId);
+    if (!task) throw new Error(`task "${taskId}" not found`);
+    if (task.status !== 'reported') {
+      throw new Error(`task "${taskId}" is ${task.status}, expected reported`);
+    }
+    return this.update(taskId, { status: 'gating' });
+  }
+
+  /**
+   * Returns a revising task to the same assignee in the same worktree, without
+   * clearing the feedback or the attempt counter that produced the revision.
+   */
+  resumeRevision(taskId: string): Task {
+    const task = this.get(taskId);
+    if (!task) throw new Error(`task "${taskId}" not found`);
+    if (task.status !== 'revising') {
+      throw new Error(`task "${taskId}" is ${task.status}, expected revising`);
+    }
+    return this.update(taskId, { status: 'assigned' });
+  }
+
+  /**
+   * Rare recovery for a revision whose assigned session row no longer exists:
+   * requeue it as pending with a cleared assignee, preserving attempts and
+   * feedback so a later dispatcher picks it up without losing history.
+   */
+  clearAssigneeAndRequeue(taskId: string): Task {
+    const task = this.get(taskId);
+    if (!task) throw new Error(`task "${taskId}" not found`);
+    return this.update(taskId, { status: 'pending', assignee_session: null });
   }
 
   toRevising(taskId: string, reason: string): Task {
@@ -168,6 +211,7 @@ export class TaskBoard {
       status: 'revising',
       attempts: current.attempts + 1,
       verdict_reason: reason,
+      review_queued_at: null,
     });
   }
 

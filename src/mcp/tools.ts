@@ -549,6 +549,16 @@ export class ToolRegistry {
           .listByAssignee(s.sessionId)
           .find((t) => t.status === 'assigned' || t.status === 'revising');
         if (!mine) throw new Error('no task is currently assigned to this session');
+        const session = sessions.get(s.sessionId);
+        const argusRow = session?.argusParent
+          ? (getDb(s.projectRoot)
+              .prepare('SELECT conventions_note_id FROM argus WHERE id = ?')
+              .get(session.argusParent) as { conventions_note_id: string | null } | undefined)
+          : undefined;
+        const conventionsNoteId = argusRow?.conventions_note_id ?? null;
+        const projectConventions = conventionsNoteId
+          ? notes.readNote(conventionsNoteId)?.body ?? null
+          : null;
         return {
           id: mine.id,
           title: mine.title,
@@ -556,6 +566,7 @@ export class ToolRegistry {
           status: mine.status,
           attempts: mine.attempts,
           previousFeedback: mine.verdictReason,
+          projectConventions,
         };
       },
     });
