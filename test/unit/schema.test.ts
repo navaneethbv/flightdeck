@@ -70,6 +70,16 @@ describe('orchestrator schema', () => {
     }
   });
 
+  it('adds quota_id and throttled_until to the argus table', () => {
+    const fixture = makeRepo();
+    try {
+      const cols = columns(getDb(fixture.root), 'argus');
+      expect(cols).toEqual(expect.arrayContaining(['quota_id', 'throttled_until']));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('defaults the gate commands', () => {
     const config = loadConfig();
     expect(config.argus.gateTestCommand).toBe('npm test');

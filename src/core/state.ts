@@ -228,6 +228,8 @@ function migrate(db: DatabaseSync): void {
   const lateColumns: [string, string][] = [
     ['sessions', 'claimed_at INTEGER'],
     ['tasks', 'priority INTEGER NOT NULL DEFAULT 0'],
+    ['argus', 'quota_id TEXT'],
+    ['argus', 'throttled_until INTEGER'],
   ];
   for (const [table, col] of lateColumns) {
     try {

@@ -41,6 +41,7 @@ export interface StartArgusOptions {
   maxTasks?: number;
   questionTimeoutSec?: number;
   conventionsNoteId?: string;
+  quotaId?: string;
 }
 
 function validateStartOptions(opts: StartArgusOptions): void {
@@ -112,6 +113,8 @@ function rowToArgus(row: Record<string, unknown>): Argus {
     maxTasks: Number(row.max_tasks),
     questionTimeoutSec: Number(row.question_timeout_sec),
     conventionsNoteId: typeof row.conventions_note_id === 'string' ? row.conventions_note_id : null,
+    quotaId: typeof row.quota_id === 'string' ? row.quota_id : null,
+    throttledUntil: row.throttled_until === null || row.throttled_until === undefined ? null : Number(row.throttled_until),
   };
 }
 
@@ -212,6 +215,8 @@ export class ArgusManager {
       maxTasks: opts.maxTasks ?? 100,
       questionTimeoutSec: opts.questionTimeoutSec ?? 120,
       conventionsNoteId: opts.conventionsNoteId ?? null,
+      quotaId: opts.quotaId ?? null,
+      throttledUntil: null,
     };
     if (![2, 4, 8, 16].includes(argus.childLimit)) {
       throw new Error(`child limit must be one of 2, 4, 8, 16 (got ${argus.childLimit})`);
@@ -223,8 +228,8 @@ export class ArgusManager {
           status, manager_session_id, created_at, last_pulse_at,
           brain_harness, brain_plan_model, brain_review_model, worker_harnesses,
           budget_window_sec, budget_max_tokens, budget_count_cache_reads,
-          max_attempts_per_task, max_tasks, question_timeout_sec, conventions_note_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          max_attempts_per_task, max_tasks, question_timeout_sec, conventions_note_id, quota_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         argus.id,
@@ -249,7 +254,8 @@ export class ArgusManager {
         argus.maxAttemptsPerTask,
         argus.maxTasks,
         argus.questionTimeoutSec,
-        argus.conventionsNoteId
+        argus.conventionsNoteId,
+        argus.quotaId
       );
     this.writeProgress(argus.id, null, 'argus_created', `child_limit=${argus.childLimit} pulse=${argus.pulseSec}s`);
     return this.get(id)!;
