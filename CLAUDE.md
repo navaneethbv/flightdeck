@@ -85,7 +85,8 @@ Every MCP tool declares a `risk` of `read`, `additive`, `destructive`, or `exter
 That env check is what stops an ordinary session from impersonating the orchestrator.
 
 When adding a tool, set its `risk` deliberately.
-When constructing an `McpContext` outside the MCP server, do not hand out `isManager: true, riskyTools: true` with an auto-approving `confirm`; the web server currently does this and the spec's `Web dashboard > Authorization` section describes the fix.
+When constructing an `McpContext` outside the MCP server, do not hand out `isManager: true, riskyTools: true` with an auto-approving `confirm`.
+The web server does construct its context with `isManager: true, riskyTools: true` ([src/server/index.ts:296](src/server/index.ts#L296)), but per the spec's `Web dashboard > Authorization` section it never auto-confirms: destructive and external tools route through `requestConfirm()` for a human approval round trip in the UI, and every `/api/*` call is gated by a session-scoped capability token.
 
 ### Harness adapters
 
@@ -126,6 +127,5 @@ Every list and detail CLI command supports `--json`.
 
 ## Known state
 
-The web dashboard in [src/web/public/](src/web/public/) currently renders hardcoded sample data copied from a reference screenshot and mixes it into live session lists.
-The spec's `Prohibited: fabricated data` section forbids this and remediation is planned.
-Do not add to that pattern, and do not treat the existing mock arrays as a model to follow.
+The web dashboard renders only data returned from `/api/state`; the fabricated sample-data arrays that once shipped alongside live session lists have been removed.
+The spec's `Prohibited: fabricated data` section still applies going forward: do not reintroduce hardcoded or invented rows anywhere in [src/web/public/](src/web/public/).
