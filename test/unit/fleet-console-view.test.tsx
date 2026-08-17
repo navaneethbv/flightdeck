@@ -1,8 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { renderToString } from 'ink';
 import type { ReactElement } from 'react';
-import { FleetConsoleView, type ConsoleSnapshot } from '../../src/cli/commands/fleet.js';
+import {
+  FleetConsoleView,
+  FleetConsole,
+  loadSnapshot,
+  sortTasks,
+  resolveConsoleEvent,
+  resolveArgusId,
+  type ConsoleSnapshot,
+} from '../../src/cli/commands/fleet.js';
+import { ArgusManager } from '../../src/argus/manager.js';
+import { TaskBoard } from '../../src/argus/board.js';
+import { TablesStore } from '../../src/tables/store.js';
 import type { FleetConsoleState } from '../../src/fleet/console-state.js';
+import { makeRepo } from '../helpers.js';
 
 function state(overrides: Partial<FleetConsoleState> = {}): FleetConsoleState {
   return {
@@ -175,5 +187,82 @@ describe('FleetConsoleView', () => {
   it('does not render a quota or throttle line when neither is set', () => {
     const output = render(snapshot(), state());
     expect(output.toLowerCase()).not.toContain('throttled');
+  });
+
+  it('renders FleetConsole component cleanly', () => {
+    const fixture = makeRepo();
+    try {
+      const output = renderToString(<FleetConsole projectRoot={fixture.root} />, { columns: 100 });
+      expect(output).toContain('Workers');
+      expect(output).toContain('Tasks');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('tests loadSnapshot and sortTasks variations', () => {
+    const fixture = makeRepo();
+    try {
+      // 0 fleets
+      const snap0 = loadSnapshot(fixture.root);
+      expect(snap0.fleetError).toContain('no argus fleet exists');
+
+      // 1 fleet with tasks and progress
+      const am = new ArgusManager(fixture.root);
+      const fleet1 = am.start({ name: 'fl-snap-1' });
+      const board = new TaskBoard(fixture.root);
+      const [t1, t2] = board.create(fleet1.id, [
+        { title: 'Task Done', spec: 'Done spec', dependsOn: [] },
+        { title: 'Task Blocked', spec: 'Blocked spec', dependsOn: [] },
+      ]);
+      board.recordVerdict(t1.id, 'accept', 'done reason');
+      board.block(t2.id, 'failed reason');
+
+      const tbl = new TablesStore(fixture.root);
+      tbl.insertRow('argus_progress', { argus_id: fleet1.id, event: 'test_event', detail: 'test_detail' });
+
+      const snap1 = loadSnapshot(fixture.root);
+      expect(snap1.argusId).toBe(fleet1.id);
+      expect(snap1.tasks.length).toBe(2);
+      expect(snap1.progress.length).toBe(2);
+
+      // >1 fleets
+      am.start({ name: 'fl-snap-2' });
+      const snap2 = loadSnapshot(fixture.root);
+      expect(snap2.fleetError).toContain('multiple fleets exist');
+
+      // sortTasks
+      const sorted = sortTasks(snap1.tasks);
+      expect(sorted[0].status).toBe('done');
+
+      // resolveArgusId
+      expect(resolveArgusId(fixture.root, 'explicit-id')).toBe('explicit-id');
+      expect(() => resolveArgusId(fixture.root, undefined)).toThrow('multiple fleets exist');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('tests resolveConsoleEvent key mappings and actions', () => {
+    expect(resolveConsoleEvent('', { tab: true }, null)).toEqual({ type: 'tab' });
+    expect(resolveConsoleEvent('', { upArrow: true }, null)).toEqual({ type: 'up' });
+    expect(resolveConsoleEvent('', { downArrow: true }, null)).toEqual({ type: 'down' });
+    expect(resolveConsoleEvent('', { escape: true }, null)).toEqual({ type: 'cancel' });
+    expect(resolveConsoleEvent('', { return: true }, null)).toEqual({ type: 'confirm' });
+    expect(resolveConsoleEvent('', { backspace: true }, null)).toEqual({ type: 'backspace' });
+    expect(resolveConsoleEvent('q', {}, null)).toBe('quit');
+    expect(resolveConsoleEvent('q', {}, { kind: 'kill', sessionId: 's1' })).toEqual({ type: 'cancel' });
+    expect(resolveConsoleEvent('c', {}, null)).toEqual({ type: 'action', key: 'c' });
+    expect(resolveConsoleEvent('r', {}, null)).toEqual({ type: 'action', key: 'r' });
+    expect(resolveConsoleEvent('R', {}, null)).toEqual({ type: 'action', key: 'R' });
+    expect(resolveConsoleEvent('k', {}, null)).toEqual({ type: 'action', key: 'k' });
+    expect(resolveConsoleEvent('n', {}, null)).toEqual({ type: 'action', key: 'n' });
+    expect(resolveConsoleEvent('a', {}, null)).toEqual({ type: 'action', key: 'a' });
+    expect(resolveConsoleEvent('x', {}, null)).toEqual({ type: 'action', key: 'x' });
+    expect(resolveConsoleEvent('u', {}, null)).toEqual({ type: 'action', key: 'u' });
+    expect(resolveConsoleEvent('p', {}, null)).toEqual({ type: 'action', key: 'p' });
+    expect(resolveConsoleEvent('f', {}, null)).toEqual({ type: 'action', key: 'f' });
+    expect(resolveConsoleEvent('hello', {}, { kind: 'reject', taskId: 't1' })).toEqual({ type: 'text', value: 'hello' });
+    expect(resolveConsoleEvent('z', {}, null)).toBeNull();
   });
 });

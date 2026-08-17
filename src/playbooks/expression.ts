@@ -45,7 +45,7 @@ function readOperator(expr: string, i: number): { token: Token; nextI: number } 
     return { token: { type: 'op', value: two }, nextI: i + 2 };
   }
   const ch = expr[i];
-  if (ch === '>' || ch === '<') {
+  if (ch === '>' || ch === '<' || ch === '!') {
     return { token: { type: 'op', value: ch }, nextI: i + 1 };
   }
   if (expr.slice(i, i + 3).toLowerCase() === 'and' && (i + 3 >= expr.length || /[\s()]/.test(expr[i + 3]))) {

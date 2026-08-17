@@ -117,7 +117,7 @@ const NEXT_TAB: Record<TabName, TabName> = {
   logs: 'sessions',
 };
 
-function renderLogContent(snap: Snapshot): ReactElement {
+export function renderLogContent(snap: Snapshot): ReactElement {
   if (snap.logError) {
     return <Text color="red">{`  Could not read logs: ${snap.logError}`}</Text>;
   }
@@ -127,13 +127,13 @@ function renderLogContent(snap: Snapshot): ReactElement {
   return <Text dimColor>{'  (no log output recorded for this session)'}</Text>;
 }
 
-function getSessionStatusColor(status: string | undefined): 'green' | 'red' | 'yellow' {
+export function getSessionStatusColor(status: string | undefined): 'green' | 'red' | 'yellow' {
   if (status === 'running') return 'green';
   if (status === 'failed') return 'red';
   return 'yellow';
 }
 
-function Dashboard({ projectRoot }: { readonly projectRoot: string }): ReactElement {
+export function Dashboard({ projectRoot }: { readonly projectRoot: string }): ReactElement {
   const [snap, refresh, logIndexRef] = useSnapshot(projectRoot);
   const [tab, setTab] = useState<TabName>('sessions');
 

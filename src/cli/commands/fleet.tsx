@@ -41,7 +41,7 @@ const TASK_ORDER: Record<string, number> = {
   blocked: 7,
 };
 
-function sortTasks(tasks: Task[]): Task[] {
+export function sortTasks(tasks: Task[]): Task[] {
   return [...tasks].sort(
     (a, b) =>
       (TASK_ORDER[a.status] ?? 99) - (TASK_ORDER[b.status] ?? 99) ||
@@ -54,7 +54,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
+export function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   const fleet = new FleetManager(projectRoot);
   fleet.reconcile();
   const empty = {
@@ -317,7 +317,7 @@ function eventFromKey(key: { tab?: boolean; upArrow?: boolean; downArrow?: boole
   return null;
 }
 
-function resolveConsoleEvent(
+export function resolveConsoleEvent(
   input: string,
   key: { tab?: boolean; upArrow?: boolean; downArrow?: boolean; escape?: boolean; return?: boolean; backspace?: boolean; ctrl?: boolean },
   pending: FleetConsoleState['pendingAction']
@@ -332,7 +332,7 @@ function resolveConsoleEvent(
   return null;
 }
 
-function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
+export function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
   const snap = useConsoleSnapshot(projectRoot);
   const [state, setState] = useState<FleetConsoleState>(initialState);
   const [message, setMessage] = useState('');
@@ -415,7 +415,7 @@ function requireTmux(): void {
  * Explicit Argus selection for task overrides. The newest fleet is never
  * guessed: zero fleets fail, and more than one fleet requires `--argus`.
  */
-function resolveArgusId(projectRoot: string, argusId: string | undefined): string {
+export function resolveArgusId(projectRoot: string, argusId: string | undefined): string {
   if (argusId !== undefined) return argusId;
   const fleets = new ArgusManager(projectRoot).list();
   if (fleets.length === 0) throw new Error('no argus fleet exists in this project');
@@ -574,9 +574,12 @@ export function registerFleet(program: Command): void {
       .description(description)
       .option('--argus <id>', 'Argus fleet id (required when more than one fleet exists)')
       .option('--json', 'output JSON')
-      .option('--project <path>', 'project root (default: current directory)')
-      .action((taskId: string, reason: string | undefined, opts: Record<string, string | boolean>) => {
+      .action((...actionArgs: unknown[]) => {
         try {
+          const cmd = actionArgs[actionArgs.length - 1] as Command;
+          const opts = cmd.optsWithGlobals() as Record<string, string | boolean>;
+          const taskId = String(actionArgs[0]);
+          const reason = actionArgs.length > 2 && typeof actionArgs[1] === 'string' ? actionArgs[1] : undefined;
           const projectRoot = projectRootOf(opts.project as string | undefined);
           const argusId = resolveArgusId(projectRoot, opts.argus as string | undefined);
           const result = run(new FleetActions(projectRoot), taskId, argusId, reason ?? '');
