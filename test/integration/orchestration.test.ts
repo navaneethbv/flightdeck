@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +15,7 @@ import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo, spawnCli, runCli, sleep } from '../helpers.js';
-import { createQuota } from '../../src/argus/quota.js';
+import { createQuota, recordQuotaUsage, setQuotaThrottle } from '../../src/argus/quota.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
 function fakeBrain(responses: Record<string, string>) {
@@ -1347,6 +1348,41 @@ describe('orchestration', () => {
     } finally {
       fake.cleanup();
       fixture.cleanup();
+    }
+  });
+
+  it('shares one quota across two missions in two different projects', async () => {
+    const projectA = makeRepo();
+    const projectB = makeRepo();
+    try {
+      const quotaId = `shared-${crypto.randomUUID().slice(0, 8)}`;
+      createQuota(quotaId, { maxTokens: 1000, windowSec: 3600 });
+
+      const managerA = new ArgusManager(projectA.root, fakeBrain({}).fn);
+      const managerB = new ArgusManager(projectB.root, fakeBrain({}).fn);
+      const argusA = managerA.start({ quotaId, name: 'mission-a' });
+      const argusB = managerB.start({ quotaId, name: 'mission-b' });
+
+      // Mission A's own brain session spends against the shared pool.
+      recordQuotaUsage(quotaId, 700);
+
+      // Mission B, in a completely different project's state.db, observes the
+      // combined spend on its very next read, with no cross-process signal
+      // beyond the shared quotas.db file.
+      const stateB = budgetState(projectB.root, argusB.id);
+      expect(stateB.spent).toBe(700);
+      expect(stateB.tier).toBe('conserve');
+
+      // A real throttle recorded by mission A immediately gates mission B's
+      // next brain call too.
+      const until = Date.now() + 60_000;
+      setQuotaThrottle(quotaId, until);
+      const stateA = budgetState(projectA.root, argusA.id);
+      expect(stateA.throttledUntil).toBe(until);
+      expect(budgetState(projectB.root, argusB.id).throttledUntil).toBe(until);
+    } finally {
+      projectA.cleanup();
+      projectB.cleanup();
     }
   });
 });
