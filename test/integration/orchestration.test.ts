@@ -14,6 +14,7 @@ import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo, spawnCli, sleep } from '../helpers.js';
+import { createQuota } from '../../src/argus/quota.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
 function fakeBrain(responses: Record<string, string>) {
@@ -110,6 +111,40 @@ describe('orchestration', () => {
       const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
       expect(() => manager.start({ conventionsNoteId: 'nope' })).toThrow(/conventions note "nope" not found/);
       expect(manager.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects a quota id that does not exist', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      expect(() => manager.start({ quotaId: 'nope' })).toThrow(/quota "nope" not found/);
+      expect(manager.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects --quota combined with --budget-window or --budget-max-tokens', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      expect(() => manager.start({ quotaId: 'q1', budgetWindowSec: 3600 })).toThrow(/cannot combine --quota/);
+      expect(() => manager.start({ quotaId: 'q1', budgetMaxTokens: 1000 })).toThrow(/cannot combine --quota/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('accepts a mission attached to an existing quota', () => {
+    const fixture = makeRepo();
+    try {
+      createQuota('shared-account', { maxTokens: 500_000, windowSec: 7200 });
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({ quotaId: 'shared-account' });
+      expect(argus.quotaId).toBe('shared-account');
     } finally {
       fixture.cleanup();
     }

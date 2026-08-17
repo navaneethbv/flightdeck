@@ -23,6 +23,7 @@ import {
   type Verdict,
 } from './brain.js';
 import { loadReviewFiles } from './review-files.js';
+import { getQuota } from './quota.js';
 
 export interface StartArgusOptions {
   name?: string;
@@ -52,6 +53,9 @@ function validateStartOptions(opts: StartArgusOptions): void {
     if (opts.workerHarnesses.length === 0) throw new Error('at least one worker harness is required');
     const invalid = opts.workerHarnesses.find((h) => h !== 'opencode' && h !== 'gemini');
     if (invalid) throw new Error(`worker harness must be opencode or gemini (got ${invalid})`);
+  }
+  if (opts.quotaId !== undefined && (opts.budgetWindowSec !== undefined || opts.budgetMaxTokens !== undefined)) {
+    throw new Error('cannot combine --quota with --budget-window or --budget-max-tokens; the quota owns those numbers');
   }
   for (const [name, value] of [
     ['budget window', opts.budgetWindowSec],
@@ -179,6 +183,9 @@ export class ArgusManager {
     validateStartOptions(opts);
     if (opts.conventionsNoteId && !this.notes.readNote(opts.conventionsNoteId)) {
       throw new Error(`conventions note "${opts.conventionsNoteId}" not found`);
+    }
+    if (opts.quotaId && !getQuota(opts.quotaId)) {
+      throw new Error(`quota "${opts.quotaId}" not found`);
     }
     this.ensureProgressTable();
     const id = crypto.randomUUID();

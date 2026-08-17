@@ -46,3 +46,7 @@ export function gitignorePath(projectRoot: string): string {
 export function worktreePath(projectRoot: string, name: string): string {
   return path.join(worktreesDir(projectRoot), name);
 }
+
+export function quotasDbPath(): string {
+  return path.join(globalDir, 'quotas.db');
+}
