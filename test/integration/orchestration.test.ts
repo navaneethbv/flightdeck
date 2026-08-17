@@ -1142,4 +1142,145 @@ describe('orchestration', () => {
       fixture.cleanup();
     }
   });
+
+  it('actually stops the manager loop when stop is issued from a separate process', async () => {
+    const fixture = makeRepo();
+    const fake = makeWakingBrain(path.join(fixture.root, 'answer-log.txt'));
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'stopme', '--mission', mission.id, '--children', '2', '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'stopme') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'stopme')!.id;
+
+      // Issued from a brand new ArgusManager instance, standing in for a
+      // separate `deck argus stop` process, exactly like the CLI does.
+      await new ArgusManager(fixture.root).stop(argusId);
+
+      const code = await new Promise<number | null>((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 3000);
+        child.on('close', (c) => {
+          clearTimeout(timeout);
+          resolve(c);
+        });
+      });
+      expect(code, 'the runForever process should exit on its own once status is stopped').not.toBeNull();
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses and resumes a mission, and rejects an invalid transition', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({});
+      // start() always creates the row with status 'stopped'; only
+      // runForever transitions it to 'running'. Simulate that directly so
+      // pause()/resume() can be tested without a spawned loop.
+      getDb(fixture.root).prepare("UPDATE argus SET status = 'running' WHERE id = ?").run(argus.id);
+
+      manager.pause(argus.id);
+      expect(manager.get(argus.id)?.status).toBe('paused');
+      expect(() => manager.pause(argus.id)).toThrow(/expected running/);
+
+      manager.resume(argus.id);
+      expect(manager.get(argus.id)?.status).toBe('running');
+      expect(() => manager.resume(argus.id)).toThrow(/expected paused/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('skips pulsing and processing pending events while paused, in a real spawned loop', async () => {
+    const fixture = makeRepo();
+    const answerLog = path.join(fixture.root, 'answer-log.txt');
+    const fake = makeWakingBrain(answerLog);
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'pauseme', '--mission', mission.id, '--children', '2', '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'pauseme') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'pauseme')!.id;
+      await waitFor(() => (new TaskBoard(fixture.root).list(argusId).length > 0 ? argusId : null));
+
+      manager.pause(argusId);
+      await sleep(500);
+
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'pauseme-worker',
+        harness: 'opencode',
+        cwd: fixture.root,
+        policy: 'child',
+        argusParent: argusId,
+      });
+      new QuestionQueue(fixture.root).ask(argusId, worker.id, 'What is the test command?');
+      await sleep(1000);
+      const answered = new QuestionQueue(fixture.root).pending(argusId);
+      expect(answered, 'a paused mission must not answer a question').toHaveLength(1);
+
+      manager.resume(argusId);
+      await waitFor(() => (new QuestionQueue(fixture.root).pending(argusId).length === 0 ? argusId : null));
+
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('skips planning without a brain call while throttled', async () => {
+    const fixture = makeRepo();
+    try {
+      const brain = fakeBrain({ plan: '{"tasks":[{"title":"a","spec":"do a","depends_on":[]}]}' });
+      const manager = new ArgusManager(fixture.root, brain.fn);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ missionNoteId: mission.id });
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET throttled_until = ? WHERE id = ?')
+        .run(Date.now() + 60_000, argus.id);
+
+      await manager.plan(argus.id);
+
+      expect(brain.calls).toHaveLength(0);
+      expect(new TaskBoard(fixture.root).list(argus.id)).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('records a real provider throttle and stops calling the brain for the rest of the window', async () => {
+    const fixture = makeRepo();
+    try {
+      let calls = 0;
+      const brain = async (_root: string, _argusId: string, opts: { label: string }): Promise<string> => {
+        calls += 1;
+        return 'Error: Claude AI usage limit reached. Please try again later. (429)';
+      };
+      const manager = new ArgusManager(fixture.root, brain);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ missionNoteId: mission.id, brainHarness: 'claude' });
+
+      await manager.plan(argus.id);
+      expect(calls).toBe(1);
+      const throttledAt = manager.get(argus.id)?.throttledUntil;
+      expect(throttledAt).not.toBeNull();
+      expect(throttledAt as number).toBeGreaterThan(Date.now());
+
+      await manager.plan(argus.id);
+      expect(calls, 'a second plan() call must not invoke the brain again while throttled').toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });
