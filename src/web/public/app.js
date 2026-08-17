@@ -478,7 +478,8 @@ async function renderMissionControlDetails(fleet) {
     // Budget meter
     if (budget) {
       setText('budget-spend-label', `${Number(budget.spent).toLocaleString()} / ${Number(budget.ceiling).toLocaleString()} tokens (${(budget.fraction * 100).toFixed(1)}%)`);
-      setText('budget-tier-label', `Tier: ${budget.tier}${budget.throttledUntil ? ' (throttled)' : ''}`);
+      const stillThrottled = budget.throttledUntil !== null && budget.throttledUntil > Date.now();
+      setText('budget-tier-label', `Tier: ${budget.tier}${stillThrottled ? ' (throttled)' : ''}`);
       const meterFill = el('budget-meter-fill');
       if (meterFill) {
         meterFill.className = `meter-fill ${budget.tier}`;

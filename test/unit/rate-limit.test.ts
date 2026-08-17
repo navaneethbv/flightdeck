@@ -26,6 +26,20 @@ describe('detectRateLimit', () => {
     expect(adapters.codex.detectRateLimit?.(output)).toBeNull();
   });
 
+  it('does not flag a token count that happens to equal 429', () => {
+    const output = '{"type":"result","usage":{"input_tokens":429,"output_tokens":50}}';
+    expect(adapters.claude.detectRateLimit?.(output)).toBeNull();
+  });
+
+  it('does not flag a successful plan discussing rate limiting as its own subject matter', () => {
+    const output = JSON.stringify({
+      type: 'result',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      result: '{"tasks":[{"title":"Explain rate limit handling","spec":"Describe how too many requests (429) are retried","depends_on":[]}]}',
+    });
+    expect(adapters.claude.detectRateLimit?.(output)).toBeNull();
+  });
+
   it('is undefined on worker-only harnesses, which never need it', () => {
     expect(adapters.opencode.detectRateLimit).toBeUndefined();
     expect(adapters.gemini.detectRateLimit).toBeUndefined();

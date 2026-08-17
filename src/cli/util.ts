@@ -54,3 +54,9 @@ export function parseSeconds(value: string): number {
   const multiplier = DURATION_MULTIPLIERS[unit] ?? 1;
   return n * multiplier;
 }
+
+export function positiveInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}

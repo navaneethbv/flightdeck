@@ -131,8 +131,32 @@ function writeJson(file: string, data: unknown): void {
 const RATE_LIMIT_PATTERNS = [/rate limit/i, /usage limit reached/i, /too many requests/i, /\b429\b/];
 const DEFAULT_RATE_LIMIT_BACKOFF_MS = 5 * 60 * 1000;
 
+function tryParseJsonLine(line: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A rate-limit phrase is only trusted on a raw (non-JSON) line, or on a
+ * structured `type: "error"` event. Both harnesses emit well-formed
+ * JSON-lines on success, and model text or usage numbers live inside string
+ * or numeric fields, never as the line itself, so a keyword match inside a
+ * normal successful event (a plan discussing rate limits, a token count that
+ * happens to be 429) is not treated as a real provider throttle.
+ */
+function lineLooksLikeRateLimit(line: string): boolean {
+  if (!RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(line))) return false;
+  const parsed = tryParseJsonLine(line);
+  if (parsed === null) return true;
+  return parsed.type === 'error';
+}
+
 function detectRateLimitByKeyword(output: string): number | null {
-  return RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(output)) ? DEFAULT_RATE_LIMIT_BACKOFF_MS : null;
+  return output.split('\n').some(lineLooksLikeRateLimit) ? DEFAULT_RATE_LIMIT_BACKOFF_MS : null;
 }
 
 const claude: HarnessAdapter = {

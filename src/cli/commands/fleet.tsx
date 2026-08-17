@@ -277,12 +277,12 @@ export function FleetConsoleView({
       {snap.quotaId !== null && (
         <Box marginBottom={1}>
           <Text dimColor>{`  quota: ${snap.quotaId}`}</Text>
-          {snap.throttledUntil !== null && (
+          {snap.throttledUntil !== null && snap.throttledUntil > Date.now() && (
             <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
           )}
         </Box>
       )}
-      {snap.quotaId === null && snap.throttledUntil !== null && (
+      {snap.quotaId === null && snap.throttledUntil !== null && snap.throttledUntil > Date.now() && (
         <Box marginBottom={1}>
           <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
         </Box>

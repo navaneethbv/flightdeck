@@ -187,7 +187,7 @@ import crypto from 'node:crypto';
 import { getDb } from '../core/state.js';
 import { SessionManager } from '../sessions/manager.js';
 import type { HarnessKind } from '../core/types.js';
-import { recordQuotaUsage } from './quota.js';
+import { getQuota, recordQuotaUsage } from './quota.js';
 
 export interface BrainInvocation {
   prompt: string;
@@ -247,7 +247,11 @@ export async function invokeBrain(
       | { input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null }
       | undefined;
     if (telemetry) {
-      const countCache = Number(argus.budget_count_cache_reads) === 1;
+      // The attached quota owns its own countCacheReads setting, set via
+      // `deck quota create --no-count-cache-reads`; the mission's own
+      // budget_count_cache_reads only applies to a private, unquota'd budget.
+      const quota = getQuota(argus.quota_id);
+      const countCache = quota ? quota.countCacheReads : Number(argus.budget_count_cache_reads) === 1;
       const tokens =
         (telemetry.input_tokens ?? 0) + (telemetry.output_tokens ?? 0) + (countCache ? telemetry.cached_tokens ?? 0 : 0);
       recordQuotaUsage(argus.quota_id, tokens);

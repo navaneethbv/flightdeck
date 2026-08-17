@@ -160,10 +160,16 @@ describe('FleetConsoleView', () => {
     expect(output).toContain('shared-account');
   });
 
-  it('renders a throttle time when set', () => {
-    const until = Date.parse('2026-08-16T12:00:00.000Z');
+  it('renders a throttle time that is still in the future', () => {
+    const until = Date.now() + 60_000;
     const output = render(snapshot({ throttledUntil: until }), state());
     expect(output.toLowerCase()).toContain('throttled');
+  });
+
+  it('does not render a throttle time that has already passed', () => {
+    const until = Date.now() - 60_000;
+    const output = render(snapshot({ throttledUntil: until }), state());
+    expect(output.toLowerCase()).not.toContain('throttled');
   });
 
   it('does not render a quota or throttle line when neither is set', () => {

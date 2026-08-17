@@ -1,14 +1,8 @@
 import { Command } from 'commander';
 import { createQuota, getQuota, listQuotas } from '../../argus/quota.js';
-import { printJson, handleError, parseSeconds } from '../util.js';
+import { printJson, handleError, parseSeconds, positiveInteger } from '../util.js';
 
 type Opts = Record<string, string | boolean | undefined>;
-
-function positiveInteger(value: string, name: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
-  return parsed;
-}
 
 export function registerQuota(program: Command): void {
   const quota = program.command('quota').description('Named token budget pools shared across missions and projects');

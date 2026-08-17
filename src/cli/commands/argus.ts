@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { projectRootOf, printJson, handleError, parseSeconds } from '../util.js';
+import { projectRootOf, printJson, handleError, parseSeconds, positiveInteger } from '../util.js';
 import { ArgusManager } from '../../argus/manager.js';
 import { NotesStore } from '../../notes/store.js';
 import { renderMissionTemplate, type MissionTemplateKind } from '../../argus/templates.js';
@@ -8,12 +8,6 @@ import { budgetState } from '../../argus/budget.js';
 import type { BrainHarness, WorkerHarness } from '../../core/types.js';
 
 type Opts = Record<string, string | boolean | undefined>;
-
-function positiveInteger(value: string, name: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
-  return parsed;
-}
 
 function brainHarness(value: string): BrainHarness {
   if (value !== 'claude' && value !== 'codex') {
