@@ -377,13 +377,13 @@ steps:
       await expect(engine.run(pb, { inputs: {} })).rejects.toThrow('requires input "apiKey"');
 
       // Secret proxy
-      process.env.FLIGHTDECK_SECRET_TEST_API_KEY = 'secret-val-123';
+      process.env.FLIGHTDECK_SECRET_MOCK_ENV_VAR = 'mock_env_value';
       const yamlSecret = `
 name: secret-test
 steps:
   - id: s1
     type: bash
-    command: echo "{{ secrets.TEST_API_KEY }}"
+    command: echo "{{ secrets.MOCK_ENV_VAR }}"
 `;
       const pbSec = parsePlaybookYaml(yamlSecret, 'secret-test');
       const resSec = await engine.run(pbSec);

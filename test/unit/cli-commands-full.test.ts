@@ -16,10 +16,12 @@ import { registerTui } from '../../src/cli/commands/tui.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
-import { makeRepo } from '../helpers.js';
+import { makeRepo, makeFakeHarness } from '../helpers.js';
 
 describe('Complete CLI Commands Coverage Suite', () => {
   let fixture: ReturnType<typeof makeRepo>;
+  let fakeHarness: ReturnType<typeof makeFakeHarness>;
+  let oldPath: string | undefined;
   let stdoutChunks: string[];
   let stderrChunks: string[];
 
@@ -64,6 +66,9 @@ describe('Complete CLI Commands Coverage Suite', () => {
 
   beforeEach(() => {
     fixture = makeRepo();
+    fakeHarness = makeFakeHarness('opencode');
+    oldPath = process.env.PATH;
+    process.env.PATH = `${fakeHarness.binDir}:${process.env.PATH ?? ''}`;
     stdoutChunks = [];
     stderrChunks = [];
     vi.spyOn(process.stdout, 'write').mockImplementation((str: any) => {
@@ -91,6 +96,8 @@ describe('Complete CLI Commands Coverage Suite', () => {
   });
 
   afterEach(() => {
+    process.env.PATH = oldPath;
+    fakeHarness?.cleanup();
     vi.restoreAllMocks();
     fixture.cleanup();
   });

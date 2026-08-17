@@ -17,6 +17,7 @@ import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { TaskBoard } from '../../src/argus/board.js';
 import { FleetActions } from '../../src/fleet/actions.js';
+import { Integrations } from '../../src/integrations/index.js';
 import * as harness from '../../src/sessions/harness.js';
 import { makeRepo } from '../helpers.js';
 
@@ -248,11 +249,7 @@ describe('CLI Deep Coverage Suite', () => {
   });
 
   it('tests integration auth and ssh run CLI commands', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ issues: [] }),
-    } as any);
+    vi.spyOn(Integrations.prototype, 'auth').mockResolvedValue(undefined);
 
     let out = await runCli(
       'integration',
@@ -274,7 +271,6 @@ describe('CLI Deep Coverage Suite', () => {
 
     // SSH run
     await runCli('ssh', 'add', 'my-ssh', 'localhost', '--project', fixture.root);
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({} as any);
   });
 
   it('tests ui command without opening browser', async () => {

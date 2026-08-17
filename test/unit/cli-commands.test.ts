@@ -359,8 +359,8 @@ describe('CLI Commands In-Process Execution Suite', () => {
       out = await runCli('doctor', '--project', fixture.root, '--json');
       expect(out.stdout).toContain('git');
 
-      out = await runCli('login', '--check', '--json');
-      expect(out.stdout).toContain('kind');
+      out = await runCli('login', 'claude', '--check', '--json');
+      expect(out.stdout).toContain('claude');
 
       out = await runCli('watchdog', 'list', '--project', fixture.root, '--json');
       expect(out.stdout).toBeDefined();
