@@ -24,6 +24,7 @@ import {
 } from './brain.js';
 import { loadReviewFiles } from './review-files.js';
 import { getQuota } from './quota.js';
+import { runOnEventHooks } from './hooks.js';
 
 export interface StartArgusOptions {
   name?: string;
@@ -979,6 +980,7 @@ export class ArgusManager {
     } catch (err) {
       log.error(`failed to write argus progress: ${(err as Error).message}`);
     }
+    runOnEventHooks(this.projectRoot, event, argusId, sessionId, detail);
   }
 }
 

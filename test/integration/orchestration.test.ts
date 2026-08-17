@@ -150,6 +150,35 @@ describe('orchestration', () => {
     }
   });
 
+  it('fires an on-event hook when a task is blocked', async () => {
+    const fixture = makeRepo();
+    const hookDir = path.join(fixture.root, '.flightdeck', 'hooks', 'on-event');
+    const eventFile = path.join(fixture.root, 'events.txt');
+    fs.mkdirSync(hookDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hookDir, '01-record.sh'),
+      `#!/bin/bash\necho "$FLIGHTDECK_EVENT" >> "${eventFile}"\n`,
+      { mode: 0o755 }
+    );
+    try {
+      const brain = fakeBrain({
+        plan: '{"tasks":[{"title":"a","spec":"do a","depends_on":[]}]}',
+      });
+      const manager = new ArgusManager(fixture.root, brain.fn);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ name: 'fleet', maxAttemptsPerTask: 1, missionNoteId: mission.id });
+      await manager.plan(argus.id);
+      const board = new TaskBoard(fixture.root);
+      const task = board.list(argus.id)[0];
+      board.toRevising(task.id, 'forced for test');
+      await manager.resumeRevisions(argus.id);
+      const events = fs.existsSync(eventFile) ? fs.readFileSync(eventFile, 'utf8').trim().split('\n') : [];
+      expect(events).toContain('task_blocked');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('turns a plan into board rows', async () => {
     const fixture = makeRepo();
     try {
