@@ -296,32 +296,34 @@ describe('MCP Tools & Server Complete Unit Suite', () => {
       secretsMap.set('slack:token', 'sltok');
 
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
-        const u = String(url);
-        if (u.includes('atlassian.net')) {
+        const parsed = new URL(String(url));
+        const host = parsed.hostname;
+        const path = parsed.pathname;
+        if (host === 'dom.atlassian.net') {
           return {
             ok: true,
             status: 200,
             json: async () => ({ issues: [{ key: 'J-1', fields: { summary: 'Bug', status: { name: 'Open' } } }] }),
           } as any;
         }
-        if (u.includes('api.github.com/repos/o/r/pulls/1')) {
+        if (host === 'api.github.com' && path.includes('/repos/o/r/pulls/1')) {
           return {
             ok: true,
             status: 200,
             json: async () => ({ number: 1, title: 'PR 1', state: 'open', html_url: 'u' }),
           } as any;
         }
-        if (u.includes('api.github.com')) {
+        if (host === 'api.github.com') {
           return {
             ok: true,
             status: 200,
             json: async () => ({ items: [{ number: 1, title: 'PR 1', state: 'open', html_url: 'u' }] }),
           } as any;
         }
-        if (u.includes('conversations.list')) {
+        if (host === 'slack.com' && path.includes('/conversations.list')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, channels: [{ id: 'C1', name: 'general' }] }) } as any;
         }
-        if (u.includes('conversations.history')) {
+        if (host === 'slack.com' && path.includes('/conversations.history')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, messages: [{ ts: '1.1', text: 'Hello' }] }) } as any;
         }
         return { ok: true, status: 200, json: async () => ({ ok: true }) } as any;
