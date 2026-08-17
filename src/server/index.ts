@@ -6,6 +6,9 @@ import { randomUUID, createHash } from 'node:crypto';
 import { normalizeProjectRoot, playbooksDir, globalPlaybooksDir } from '../core/paths.js';
 import { SessionManager } from '../sessions/manager.js';
 import { ArgusManager } from '../argus/manager.js';
+import { budgetState } from '../argus/budget.js';
+import { getQuota, listQuotas } from '../argus/quota.js';
+import { TaskBoard } from '../argus/board.js';
 import { NotesStore } from '../notes/store.js';
 import { TablesStore } from '../tables/store.js';
 import { MessagingStore } from '../messaging/store.js';
@@ -522,6 +525,67 @@ export function createWebServer(opts: WebServerOptions = {}): {
         sendJson(res, 200, { stopped: true, id });
       } catch (err) {
         sendError(res, 400, (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathname.startsWith('/api/argus/') && pathname.endsWith('/fleet') && req.method === 'GET') {
+      try {
+        const id = pathname.slice('/api/argus/'.length, -'/fleet'.length);
+        const am = new ArgusManager(projectRoot);
+        const fleet = am.fleet(id);
+        const budget = budgetState(projectRoot, id);
+        const quota = fleet.argus.quotaId ? getQuota(fleet.argus.quotaId) : null;
+        const tasks = new TaskBoard(projectRoot).list(id);
+        const { cap: _cap, ...cleanArgus } = fleet.argus;
+        sendJson(res, 200, {
+          argus: cleanArgus,
+          children: fleet.children.map((c) => ({
+            ...c,
+            session: c.session ? publicSession(c.session) : c.session,
+          })),
+          recentProgress: fleet.recentProgress,
+          budget,
+          quota,
+          tasks,
+        });
+      } catch (err) {
+        sendError(res, 400, (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathname.startsWith('/api/argus/') && pathname.endsWith('/pause') && req.method === 'POST') {
+      try {
+        const id = pathname.slice('/api/argus/'.length, -'/pause'.length);
+        const am = new ArgusManager(projectRoot);
+        am.pause(id);
+        broadcastUpdate();
+        sendJson(res, 200, { paused: true, id });
+      } catch (err) {
+        sendError(res, 400, (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathname.startsWith('/api/argus/') && pathname.endsWith('/resume') && req.method === 'POST') {
+      try {
+        const id = pathname.slice('/api/argus/'.length, -'/resume'.length);
+        const am = new ArgusManager(projectRoot);
+        am.resume(id);
+        broadcastUpdate();
+        sendJson(res, 200, { resumed: true, id });
+      } catch (err) {
+        sendError(res, 400, (err as Error).message);
+      }
+      return;
+    }
+
+    if (pathname === '/api/quotas' && req.method === 'GET') {
+      try {
+        sendJson(res, 200, listQuotas());
+      } catch (err) {
+        sendError(res, 500, (err as Error).message);
       }
       return;
     }

@@ -394,7 +394,7 @@ function renderProjectTree() {
  * With no fleet configured there is nothing real to show, so we say so rather
  * than rendering a specimen mission.
  */
-function renderMission() {
+async function renderMission() {
   const fleet = selectedFleet();
   selectedFleetId = fleet ? fleet.id : null;
 
@@ -407,6 +407,7 @@ function renderMission() {
   renderMissionNote(fleet);
   renderPulseProgress(fleet);
   renderLaws(fleet);
+  await renderMissionControlDetails(fleet);
 }
 
 /** The fleet the user picked, falling back to the first when that pick is stale. */
@@ -424,6 +425,103 @@ function toggleMissionCards(hasFleet) {
   el('mission-body')?.classList.toggle('hidden', !hasFleet);
   el('pulse-card')?.classList.toggle('hidden', !hasFleet);
   el('laws-card')?.classList.toggle('hidden', !hasFleet);
+  el('task-board-card')?.classList.toggle('hidden', !hasFleet);
+}
+
+async function renderMissionControlDetails(fleet) {
+  // Quota and tier badges
+  const quotaBadge = el('fleet-quota-badge');
+  const tierBadge = el('fleet-tier-badge');
+  const pauseResumeBtn = el('btn-pause-resume');
+  const pauseResumeLbl = el('lbl-pause-resume');
+  const pauseResumeIcon = el('icon-pause-resume');
+  const stopBtn = el('btn-stop-fleet');
+
+  if (fleet.status === 'running') {
+    pauseResumeBtn?.classList.remove('hidden');
+    if (pauseResumeLbl) pauseResumeLbl.textContent = 'Pause';
+    if (pauseResumeIcon) pauseResumeIcon.textContent = '⏸';
+    stopBtn?.classList.remove('hidden');
+  } else if (fleet.status === 'paused') {
+    pauseResumeBtn?.classList.remove('hidden');
+    if (pauseResumeLbl) pauseResumeLbl.textContent = 'Resume';
+    if (pauseResumeIcon) pauseResumeIcon.textContent = '▶';
+    stopBtn?.classList.remove('hidden');
+  } else {
+    pauseResumeBtn?.classList.add('hidden');
+    stopBtn?.classList.add('hidden');
+  }
+
+  try {
+    const res = await fetch(`/api/argus/${fleet.id}/fleet`, { headers: authedHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const budget = data.budget;
+    const quota = data.quota;
+    const tasks = data.tasks ?? [];
+
+    if (quotaBadge) {
+      if (quota) {
+        quotaBadge.textContent = `Quota: ${quota.id}`;
+        quotaBadge.classList.remove('hidden');
+      } else {
+        quotaBadge.classList.add('hidden');
+      }
+    }
+
+    if (tierBadge && budget) {
+      tierBadge.textContent = `Tier: ${budget.tier}`;
+      tierBadge.className = `pill-badge ${budget.tier}`;
+      tierBadge.classList.remove('hidden');
+    }
+
+    // Budget meter
+    if (budget) {
+      setText('budget-spend-label', `${Number(budget.spent).toLocaleString()} / ${Number(budget.ceiling).toLocaleString()} tokens (${(budget.fraction * 100).toFixed(1)}%)`);
+      setText('budget-tier-label', `Tier: ${budget.tier}${budget.throttledUntil ? ' (throttled)' : ''}`);
+      const meterFill = el('budget-meter-fill');
+      if (meterFill) {
+        meterFill.className = `meter-fill ${budget.tier}`;
+        meterFill.style.width = `${Math.min(100, Math.max(0, budget.fraction * 100))}%`;
+      }
+      if (quota) {
+        setText('budget-quota-details', `Shared Quota "${quota.id}": ${Number(quota.maxTokens).toLocaleString()} tokens / ${quota.windowSec}s window`);
+      } else {
+        setText('budget-quota-details', `Mission Window: ${fleet.budgetWindowSec ?? 7200}s`);
+      }
+    }
+
+    // Task board
+    const boardCard = el('task-board-card');
+    const boardCount = el('task-board-count');
+    const boardList = el('task-board-list');
+    if (boardCard && boardList) {
+      boardCard.classList.remove('hidden');
+      if (boardCount) boardCount.textContent = String(tasks.length);
+      if (tasks.length === 0) {
+        boardList.innerHTML = '<p class="empty-state">No tasks on the board yet.</p>';
+      } else {
+        boardList.innerHTML = tasks
+          .map(
+            (t) => `
+          <div class="task-board-item">
+            <div class="task-item-header">
+              <span class="task-item-title">${escapeHtml(t.title)}</span>
+              <div class="task-item-meta">
+                ${t.attempts > 0 ? `<span class="session-model-badge">attempts: ${t.attempts}</span>` : ''}
+                <span class="session-status-badge ${escapeHtml(t.status)}"><span class="status-dot">●</span> ${escapeHtml(t.status)}</span>
+              </div>
+            </div>
+            ${t.diffstat ? `<div class="task-item-details">${escapeHtml(t.diffstat)}</div>` : ''}
+            ${t.verdictReason ? `<div class="task-item-details" style="color: var(--accent-amber);">Feedback: ${escapeHtml(t.verdictReason)}</div>` : ''}
+          </div>`
+          )
+          .join('');
+      }
+    }
+  } catch {
+    // Non-blocking fetch
+  }
 }
 
 /** Heartbeat, child limit and harness controls mirror the fleet's own settings. */
@@ -856,6 +954,43 @@ function setupEventHandlers() {
     const q = e.target.value.toLowerCase().trim();
     for (const item of document.querySelectorAll('.tree-item')) {
       item.style.display = !q || item.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
+    }
+  });
+
+  el('btn-pause-resume')?.addEventListener('click', async () => {
+    const fleet = selectedFleet();
+    if (!fleet) return;
+    const action = fleet.status === 'paused' ? 'resume' : 'pause';
+    try {
+      const res = await fetch(`/api/argus/${fleet.id}/${action}`, {
+        method: 'POST',
+        headers: authedHeaders(),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? `HTTP ${res.status}`);
+      }
+      fetchState();
+    } catch (err) {
+      showError(`${action} failed: ${err.message}`);
+    }
+  });
+
+  el('btn-stop-fleet')?.addEventListener('click', async () => {
+    const fleet = selectedFleet();
+    if (!fleet) return;
+    try {
+      const res = await fetch(`/api/argus/${fleet.id}/stop`, {
+        method: 'POST',
+        headers: authedHeaders(),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? `HTTP ${res.status}`);
+      }
+      fetchState();
+    } catch (err) {
+      showError(`stop failed: ${err.message}`);
     }
   });
 

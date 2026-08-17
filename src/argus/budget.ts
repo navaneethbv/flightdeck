@@ -37,11 +37,13 @@ export interface BudgetState {
    */
   nextResetAt: number | null;
   /**
-   * A real provider rate limit observed on a previous brain call, or null.
+   * Real provider rate limit observed on a previous brain call, or null.
    * Set on the mission's quota when attached to one, or on the mission's own
    * row otherwise, and checked before every brain call regardless of source.
    */
   throttledUntil: number | null;
+  /** Named token budget pool attached with --quota, or null when using private budget. */
+  quotaId: string | null;
 }
 
 export function classifyTier(fraction: number): BudgetTier {
@@ -159,5 +161,6 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
     oldestReviewAgeSec: queued.oldest === null ? null : Math.max(0, (now() - queued.oldest) / 1000),
     nextResetAt,
     throttledUntil,
+    quotaId,
   };
 }

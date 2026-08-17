@@ -135,8 +135,18 @@
 
               <div class="profile-right-col">
                 <div class="profile-header-row">
-                  <h1 class="mission-title" id="fleet-title">-</h1>
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <h1 class="mission-title" id="fleet-title">-</h1>
+                    <span class="pill-badge purple hidden" id="fleet-quota-badge"></span>
+                    <span class="pill-badge normal hidden" id="fleet-tier-badge">normal</span>
+                  </div>
                   <div class="action-buttons-row">
+                    <button class="btn-action warning hidden" id="btn-pause-resume">
+                      <span class="btn-icon" id="icon-pause-resume">⏸</span> <span id="lbl-pause-resume">Pause</span>
+                    </button>
+                    <button class="btn-action danger hidden" id="btn-stop-fleet">
+                      <span class="btn-icon">⏹</span> Stop
+                    </button>
                     <button class="btn-action primary" id="btn-reply-now">
                       <span class="btn-icon">💬</span> Reply now
                     </button>
@@ -155,6 +165,20 @@
                     <p class="block-desc"><span id="fleet-status">-</span></p>
                   </div>
 
+                  <div class="info-block" id="budget-meter-container">
+                    <h4 class="block-label">TOKEN BUDGET &amp; QUOTA</h4>
+                    <div class="budget-meter-box">
+                      <div class="budget-meter-header">
+                        <span id="budget-spend-label">- / - tokens</span>
+                        <span id="budget-tier-label">Tier: normal</span>
+                      </div>
+                      <div class="meter-bar">
+                        <div class="meter-fill normal" id="budget-meter-fill"></div>
+                      </div>
+                      <div id="budget-quota-details" class="task-item-details" style="margin-top: 6px;"></div>
+                    </div>
+                  </div>
+
                   <div class="info-block">
                     <h4 class="block-label">MISSION NOTE: <span id="mission-note-label">-</span></h4>
                     <pre class="block-desc mission-note-body" id="mission-text"></pre>
@@ -162,6 +186,14 @@
                 </div>
               </div>
             </div>
+          </section>
+
+          <!-- Task board for the selected fleet. -->
+          <section class="card task-board-card hidden" id="task-board-card">
+            <div class="task-board-header">
+              <h3 class="section-title">Task Board (<span id="task-board-count">0</span>)</h3>
+            </div>
+            <div class="task-board-list" id="task-board-list"></div>
           </section>
 
           <!-- Recent pulse history for the selected fleet. -->
