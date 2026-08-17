@@ -13,7 +13,7 @@ import { SessionManager } from '../../src/sessions/manager.js';
 import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
 import { getDb, now } from '../../src/core/state.js';
-import { makeRepo, spawnCli, sleep } from '../helpers.js';
+import { makeRepo, spawnCli, runCli, sleep } from '../helpers.js';
 import { createQuota } from '../../src/argus/quota.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
@@ -1280,6 +1280,72 @@ describe('orchestration', () => {
       await manager.plan(argus.id);
       expect(calls, 'a second plan() call must not invoke the brain again while throttled').toBe(1);
     } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('creates, lists, and shows a quota through the CLI', () => {
+    const fixture = makeRepo();
+    try {
+      const created = runCli(['quota', 'create', 'cli-quota', '--max-tokens', '500000', '--window', '2h', '--json'], {
+        cwd: fixture.root,
+      });
+      expect(created.code, created.stderr).toBe(0);
+      expect(JSON.parse(created.stdout)).toMatchObject({ id: 'cli-quota', maxTokens: 500000, windowSec: 7200 });
+
+      const listed = runCli(['quota', 'list', '--json'], { cwd: fixture.root });
+      expect(listed.code, listed.stderr).toBe(0);
+      expect(JSON.parse(listed.stdout).map((q: { id: string }) => q.id)).toContain('cli-quota');
+
+      const shown = runCli(['quota', 'show', 'cli-quota', '--json'], { cwd: fixture.root });
+      expect(shown.code, shown.stderr).toBe(0);
+      expect(JSON.parse(shown.stdout)).toMatchObject({ id: 'cli-quota' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects deck argus start --quota combined with --budget-window', () => {
+    const fixture = makeRepo();
+    try {
+      runCli(['quota', 'create', 'combo-quota', '--max-tokens', '1000', '--window', '1h'], { cwd: fixture.root });
+      const mission = new NotesStore(fixture.root).createNote('mission', '- do it');
+      const result = runCli(
+        ['argus', 'start', '--mission', mission.id, '--quota', 'combo-quota', '--budget-window', '1h', '--json'],
+        { cwd: fixture.root, env: { FLIGHTDECK_FORBID_REAL_HARNESS: '1' } }
+      );
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/cannot combine --quota/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses and resumes a mission through the CLI', async () => {
+    const fixture = makeRepo();
+    const fake = makeWakingBrain(path.join(fixture.root, 'answer-log.txt'));
+    const mission = new NotesStore(fixture.root).createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'cli-pause', '--mission', mission.id, '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'cli-pause') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'cli-pause')!.id;
+
+      const paused = runCli(['argus', 'pause', argusId], { cwd: fixture.root });
+      expect(paused.code, paused.stderr).toBe(0);
+      await waitFor(() => (manager.get(argusId)?.status === 'paused' ? argusId : null));
+
+      const resumed = runCli(['argus', 'resume', argusId], { cwd: fixture.root });
+      expect(resumed.code, resumed.stderr).toBe(0);
+      await waitFor(() => (manager.get(argusId)?.status === 'running' ? argusId : null));
+
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    } finally {
+      fake.cleanup();
       fixture.cleanup();
     }
   });

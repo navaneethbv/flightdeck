@@ -80,6 +80,7 @@ function buildArgusStartParams(opts: Opts, missionNoteId: string) {
     workerHarnesses: workerHarnesses((opts.workerHarness as string[] | undefined) ?? []),
     budgetWindowSec: opts.budgetWindow !== undefined ? parseSeconds(String(opts.budgetWindow)) : undefined,
     budgetMaxTokens: opts.budgetMaxTokens !== undefined ? positiveInteger(String(opts.budgetMaxTokens), 'budget maximum') : undefined,
+    quotaId: opts.quota !== undefined ? String(opts.quota) : undefined,
     maxAttemptsPerTask: opts.maxAttempts !== undefined ? positiveInteger(String(opts.maxAttempts), 'maximum attempts') : undefined,
     maxTasks: opts.maxTasks !== undefined ? positiveInteger(String(opts.maxTasks), 'maximum tasks') : undefined,
     questionTimeoutSec: opts.questionTimeout !== undefined ? parseSeconds(String(opts.questionTimeout)) : undefined,
@@ -132,6 +133,7 @@ export function registerArgus(program: Command): void {
     )
     .option('--budget-window <duration>', 'rolling brain budget window, for example 2h')
     .option('--budget-max-tokens <count>', 'maximum brain tokens in the window')
+    .option('--quota <id>', 'named token budget pool')
     .option('--max-attempts <count>', 'attempt limit per task')
     .option('--max-tasks <count>', 'task count ceiling for the mission')
     .option('--question-timeout <duration>', 'worker question timeout')
@@ -161,6 +163,34 @@ export function registerArgus(program: Command): void {
       try {
         await new ArgusManager(projectRootOf(opts.project as string | undefined)).stop(id);
         process.stdout.write(`stopped argus ${id}\n`);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('pause')
+    .description('Pause an Argus fleet (workers keep running, brain calls stop)')
+    .argument('<id>', 'argus id')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action((id: string, opts: Opts) => {
+      try {
+        new ArgusManager(projectRootOf(opts.project as string | undefined)).pause(id);
+        process.stdout.write(`paused argus ${id}\n`);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  argus
+    .command('resume')
+    .description('Resume a paused Argus fleet')
+    .argument('<id>', 'argus id')
+    .option('--project <path>', 'project root (default: current directory)')
+    .action((id: string, opts: Opts) => {
+      try {
+        new ArgusManager(projectRootOf(opts.project as string | undefined)).resume(id);
+        process.stdout.write(`resumed argus ${id}\n`);
       } catch (err) {
         handleError(err);
       }
