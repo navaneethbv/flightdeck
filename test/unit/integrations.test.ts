@@ -402,8 +402,8 @@ describe('Integrations Subsystem', () => {
       secretsMap.set('slack:token', 'sltok');
 
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
-        const u = String(url);
-        if (u.includes('atlassian.net')) {
+        const parsed = new URL(String(url));
+        if (parsed.hostname === 'dom.atlassian.net') {
           return {
             ok: true,
             status: 200,
@@ -412,7 +412,7 @@ describe('Integrations Subsystem', () => {
             }),
           } as any;
         }
-        if (u.includes('api.github.com')) {
+        if (parsed.hostname === 'api.github.com') {
           return {
             ok: true,
             status: 200,
@@ -421,14 +421,14 @@ describe('Integrations Subsystem', () => {
             }),
           } as any;
         }
-        if (u.includes('conversations.list')) {
+        if (parsed.hostname === 'slack.com' && parsed.pathname === '/api/conversations.list') {
           return {
             ok: true,
             status: 200,
             json: async () => ({ ok: true, channels: [{ id: 'C1', name: 'dev' }] }),
           } as any;
         }
-        if (u.includes('conversations.history')) {
+        if (parsed.hostname === 'slack.com' && parsed.pathname === '/api/conversations.history') {
           return {
             ok: true,
             status: 200,
