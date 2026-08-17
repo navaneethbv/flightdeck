@@ -46,6 +46,18 @@ export interface HarnessAdapter {
    * overrides so a custom config dir is checked in the right place.
    */
   authFiles(env?: NodeJS.ProcessEnv): string[];
+  /**
+   * Best-effort detection of a real provider rate limit in one invocation's
+   * combined output, returning a suggested backoff in milliseconds, or null
+   * when nothing matches. No API exposes a structured retry-after in headless
+   * mode for either harness today, so this is a keyword heuristic with a
+   * fixed backoff, the same kind of self-imposed, observed-behavior estimate
+   * the token budget itself already is. Revisit once real throttle output has
+   * been captured from each harness. Only implemented for brain-eligible
+   * harnesses (claude, codex); a worker harness never triggers a brain-budget
+   * concern.
+   */
+  detectRateLimit?(output: string): number | null;
 }
 
 /**
@@ -116,6 +128,13 @@ function writeJson(file: string, data: unknown): void {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+const RATE_LIMIT_PATTERNS = [/rate limit/i, /usage limit reached/i, /too many requests/i, /\b429\b/];
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 5 * 60 * 1000;
+
+function detectRateLimitByKeyword(output: string): number | null {
+  return RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(output)) ? DEFAULT_RATE_LIMIT_BACKOFF_MS : null;
+}
+
 const claude: HarnessAdapter = {
   kind: 'claude',
   binary: 'claude',
@@ -150,6 +169,7 @@ const claude: HarnessAdapter = {
       env?.CLAUDE_CONFIG_DIR ?? loadConfig().profileDir.claude ?? path.join(env?.HOME ?? os.homedir(), '.claude');
     return [path.join(dir, '.credentials.json')];
   },
+  detectRateLimit: detectRateLimitByKeyword,
 };
 
 const codex: HarnessAdapter = {
@@ -188,6 +208,7 @@ const codex: HarnessAdapter = {
     const dir = env?.CODEX_HOME ?? loadConfig().profileDir.codex ?? path.join(env?.HOME ?? os.homedir(), '.codex');
     return [path.join(dir, 'auth.json')];
   },
+  detectRateLimit: detectRateLimitByKeyword,
 };
 
 const opencode: HarnessAdapter = {
