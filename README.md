@@ -36,7 +36,7 @@
 
 - **Multi-Harness Support**: First-class adapters for **Google Gemini** (`gemini`), **Claude Code** (`claude`), **Codex** (`codex`), and **OpenCode** (`opencode`) with auto-detection, custom config profiles, and dual MCP configuration writing (`.mcp.json` and `.gemini/settings.json`).
 - **Isolated Worktrees**: Branch-isolated Git worktrees preventing file-edit collisions between parallel agents, with post-create lifecycle hooks, status inspection, diff generation, and clean merge checks.
-- **Per-Session MCP Server**: 40 agent tools covering worktrees, notes, tables, messaging, playbooks, integrations, and SSH execution, protected by cryptographic session tokens and security policy matrices.
+- **Per-Session MCP Server**: 43 agent tools covering worktrees, notes, tables, messaging, playbooks, integrations, and SSH execution, protected by cryptographic session tokens and security policy matrices.
 - **Argus Multi-Agent Orchestration**: Autonomous fleet manager driven by Markdown Mission notes, staffing child subagents in dedicated worktrees with pulse cadence loops and completion deduplication.
 - **Watchdog Supervision**: Proactively detects hung/stuck sessions, loops, and interactive permission prompts (`[y/N]`), with auto-kill and inspection capabilities.
 - **Structured Project Memory**:
@@ -53,13 +53,15 @@
 ## 📦 Installation & Requirements
 
 ### Requirements
-- **Node.js**: `v22.5.0` or higher
+- **Node.js**: `v22.5.0` or higher (state uses the built-in `node:sqlite`, not a native module)
 - **Git**: `2.30+` installed on system `PATH`
 - **Agent Harnesses** *(optional, at least one recommended)*:
   - Google Gemini CLI (`gemini`)
   - Claude Code (`claude`)
   - OpenAI Codex (`codex`)
   - OpenCode (`opencode`)
+- **tmux**: required only for `deck fleet` (the tmux window/console UI); every other command works without it.
+- **macOS**: required only for `deck integration auth` and playbook `{{ secrets.NAME }}` values, which are stored in the macOS Keychain via the `security` CLI. On Linux, set the equivalent `FLIGHTDECK_SECRET_<NAME>` environment variable instead — see [Environment Variables](#-environment-variables-reference).
 
 ### Install from Source
 ```bash
@@ -256,8 +258,10 @@ Task overrides require an explicit `--argus <id>` when more than one fleet exist
 | `deck login [harness...]` | Authenticate your coding-agent harnesses (`claude`, `codex`, `opencode`, `gemini`); `--check` reports auth status without running a login flow |
 | `deck doctor [--fix]` | Run environment diagnostics and repair state issues |
 | `deck repair` | Self-heal project directories, dead sessions, and worktree references |
+| `deck config get [key]` | Print global config, or one key |
 | `deck config set-default-harness <harness>` | Set global default harness (`gemini`, `claude`, `codex`, `opencode`) |
 | `deck config set-profile-dir <harness> <dir>` | Set custom profile/config directory |
+| `deck config path` | Print the global config file path |
 
 ---
 
@@ -276,20 +280,54 @@ When spawned by `deck`, each coding agent harness connects to `deck mcp serve --
 
 ---
 
-## 🧪 Testing & Validation
+## 🛠 Development
 
-Flightdeck maintains a comprehensive test suite across unit, integration, and end-to-end tiers:
+### npm scripts
+
+| Script | What it does |
+| :--- | :--- |
+| `npm run build` | Compiles TypeScript (`tsc -p tsconfig.json`) and copies `src/web/public/` static assets into `dist/`. |
+| `npm run dev` | Runs the CLI straight from source via `tsx`, no build step (`tsx src/cli/index.ts <args>`). |
+| `npm start` | Runs the already-built CLI (`node dist/cli/index.js`). |
+| `npm run typecheck` | `tsc --noEmit`. |
+| `npm run lint` | `eslint src test`. |
+| `npm test` | Builds first (`pretest` hook), then `vitest run` over the whole suite. |
+| `npm run test:unit` | `vitest run test/unit` only. |
+| `npm run test:integration` | `vitest run test/integration` only. |
+| `npm run test:e2e` | `vitest run test/e2e` only. |
+| `npm run test:coverage` | `vitest run --coverage`. |
+
+### Running a single test
 
 ```bash
-# Run TypeScript compilation check
-npm run typecheck
+npx vitest run test/unit/playbooks.test.ts
+npx vitest run -t "enforces isolation"
+```
 
-# Run ESLint validation
+**Build first.** `npm test` builds automatically via `pretest`, but `test:unit`, `test:integration`, `test:e2e`, and any direct `npx vitest` call do not. The integration and e2e tiers spawn `dist/cli/index.js` as a real child process, so a stale `dist/` silently tests the previous build. Run `npm run build` before invoking `vitest` directly, and again after editing `src/web/public/` before `deck ui` will serve the change.
+
+### Gate before committing
+
+```bash
 npm run lint
-
-# Run all Vitest suites (14 suites, 50 tests)
+npm run typecheck
 npm test
 ```
+
+All three are required to pass; this is the same gate CI runs.
+
+---
+
+## 🌍 Environment Variables Reference
+
+| Variable | Purpose |
+| :--- | :--- |
+| `FLIGHTDECK_HOME` | Overrides the global config/state directory (default `~/.flightdeck`). Point it at a scratch directory to run an isolated `deck` instance, e.g. for testing. |
+| `FLIGHTDECK_SECRET_<NAME>` | Supplies a playbook `{{ secrets.NAME }}` value directly, bypassing the macOS Keychain. Required on Linux, where Keychain isn't available; `<NAME>` is upper-cased with non-alphanumerics replaced by `_`. |
+| `FLIGHTDECK_DEBUG=1` | Enables verbose internal logging. |
+| `FLIGHTDECK_CLI_PATH` | Overrides the path `deck` re-execs itself with (used by the fleet/tmux and Argus child-process wiring; not normally set by hand). |
+
+A few other `FLIGHTDECK_*` variables (`FLIGHTDECK_SESSION_TOKEN`, `FLIGHTDECK_ARGUS_CAP`, `FLIGHTDECK_ARGUS_ID`, `FLIGHTDECK_WORKTREE`, and the `FLIGHTDECK_EVENT`/`FLIGHTDECK_MESSAGE` pair passed to `on-event` hooks) are set internally by `deck` when it spawns sessions, harnesses, and hooks. They aren't meant to be set by hand.
 
 ---
 
