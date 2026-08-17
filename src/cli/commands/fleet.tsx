@@ -16,12 +16,15 @@ import type { Task } from '../../core/types.js';
 export interface ConsoleSnapshot {
   sessions: ReturnType<FleetManager['fleetSessions']>;
   argusId: string | null;
+  argusStatus: string | null;
   tasks: Task[];
   reviewQueueDepth: number;
   nextBudgetResetAt: number | null;
   spent: number;
   ceiling: number;
   tier: string;
+  quotaId: string | null;
+  throttledUntil: number | null;
   progress: string[];
   fleetError: string | null;
   tick: number;
@@ -57,12 +60,15 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   const empty = {
     sessions: fleet.fleetSessions(),
     argusId: null,
+    argusStatus: null,
     tasks: [] as Task[],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
+    quotaId: null,
+    throttledUntil: null,
     progress: [] as string[],
     fleetError: null as string | null,
   };
@@ -90,12 +96,15 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   return {
     sessions: fleet.fleetSessions(),
     argusId: argus.id,
+    argusStatus: argus.status,
     tasks: sortTasks(all),
     reviewQueueDepth: budget.reviewQueueDepth,
     nextBudgetResetAt: budget.nextResetAt,
     spent: budget.spent,
     ceiling: budget.ceiling,
     tier: budget.tier,
+    quotaId: argus.quotaId,
+    throttledUntil: budget.throttledUntil,
     progress,
     fleetError: null,
   };
@@ -108,12 +117,15 @@ function emptySnapshot(): Omit<ConsoleSnapshot, 'tick'> {
   return {
     sessions: [],
     argusId: null,
+    argusStatus: null,
     tasks: [],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
+    quotaId: null,
+    throttledUntil: null,
     progress: [],
     fleetError: null,
   };
@@ -208,6 +220,7 @@ export function FleetConsoleView({
       <Box marginBottom={1}>
         <Text bold color="cyan">{'flightdeck fleet  '}</Text>
         <Text dimColor>{'select with Tab/arrows  '}</Text>
+        {snap.argusStatus === 'paused' && <Text color="yellow">{'paused'}</Text>}
       </Box>
 
       {snap.fleetError !== null && <Text color="red">{snap.fleetError}</Text>}
@@ -261,6 +274,19 @@ export function FleetConsoleView({
           <Text>{`  next reset ${new Date(snap.nextBudgetResetAt).toLocaleTimeString()}`}</Text>
         )}
       </Box>
+      {snap.quotaId !== null && (
+        <Box marginBottom={1}>
+          <Text dimColor>{`  quota: ${snap.quotaId}`}</Text>
+          {snap.throttledUntil !== null && (
+            <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
+          )}
+        </Box>
+      )}
+      {snap.quotaId === null && snap.throttledUntil !== null && (
+        <Box marginBottom={1}>
+          <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
+        </Box>
+      )}
 
       <Text bold underline>Decisions</Text>
       <Box flexDirection="column" marginBottom={1}>

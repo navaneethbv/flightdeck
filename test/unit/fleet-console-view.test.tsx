@@ -19,12 +19,15 @@ function snapshot(overrides: Partial<ConsoleSnapshot> = {}): ConsoleSnapshot {
   return {
     sessions: [],
     argusId: null,
+    argusStatus: null,
     tasks: [],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
+    quotaId: null,
+    throttledUntil: null,
     progress: [],
     fleetError: null,
     tick: 1,
@@ -145,5 +148,26 @@ describe('FleetConsoleView', () => {
     expect(output).toContain('multiple fleets exist');
     expect(output).toContain('Tasks');
     expect(output).toContain('(none)');
+  });
+
+  it('renders a paused mission distinctly from running or stopped', () => {
+    const output = render(snapshot({ argusStatus: 'paused' }), state());
+    expect(output).toContain('paused');
+  });
+
+  it('renders the attached quota id when present', () => {
+    const output = render(snapshot({ quotaId: 'shared-account' }), state());
+    expect(output).toContain('shared-account');
+  });
+
+  it('renders a throttle time when set', () => {
+    const until = Date.parse('2026-08-16T12:00:00.000Z');
+    const output = render(snapshot({ throttledUntil: until }), state());
+    expect(output.toLowerCase()).toContain('throttled');
+  });
+
+  it('does not render a quota or throttle line when neither is set', () => {
+    const output = render(snapshot(), state());
+    expect(output.toLowerCase()).not.toContain('throttled');
   });
 });
