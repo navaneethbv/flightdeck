@@ -80,8 +80,8 @@ export function secretNames(): string[] {
     const out = execFileSync('security', ['dump-keychain', '-s', SERVICE]).toString();
     const names: string[] = [];
     for (const line of out.split('\n')) {
-      const m = line.match(/"acct"<blob>=0x00000008\s+([0-9a-f]+)/);
-      if (m) names.push(m[1]);
+      const m = line.match(/"acct"<blob>=(?:0x[0-9a-fA-F]+\s+)?"?([^"\r\n]+)"?/);
+      if (m) names.push(m[1].trim());
     }
     return names.filter((n) => n.startsWith('secret:')).map((n) => n.slice('secret:'.length));
   } catch {

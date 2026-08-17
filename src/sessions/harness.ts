@@ -46,6 +46,18 @@ export interface HarnessAdapter {
    * overrides so a custom config dir is checked in the right place.
    */
   authFiles(env?: NodeJS.ProcessEnv): string[];
+  /**
+   * Best-effort detection of a real provider rate limit in one invocation's
+   * combined output, returning a suggested backoff in milliseconds, or null
+   * when nothing matches. No API exposes a structured retry-after in headless
+   * mode for either harness today, so this is a keyword heuristic with a
+   * fixed backoff, the same kind of self-imposed, observed-behavior estimate
+   * the token budget itself already is. Revisit once real throttle output has
+   * been captured from each harness. Only implemented for brain-eligible
+   * harnesses (claude, codex); a worker harness never triggers a brain-budget
+   * concern.
+   */
+  detectRateLimit?(output: string): number | null;
 }
 
 /**
@@ -116,6 +128,37 @@ function writeJson(file: string, data: unknown): void {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+const RATE_LIMIT_PATTERNS = [/rate limit/i, /usage limit reached/i, /too many requests/i, /\b429\b/];
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 5 * 60 * 1000;
+
+function tryParseJsonLine(line: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A rate-limit phrase is only trusted on a raw (non-JSON) line, or on a
+ * structured `type: "error"` event. Both harnesses emit well-formed
+ * JSON-lines on success, and model text or usage numbers live inside string
+ * or numeric fields, never as the line itself, so a keyword match inside a
+ * normal successful event (a plan discussing rate limits, a token count that
+ * happens to be 429) is not treated as a real provider throttle.
+ */
+function lineLooksLikeRateLimit(line: string): boolean {
+  if (!RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(line))) return false;
+  const parsed = tryParseJsonLine(line);
+  if (parsed === null) return true;
+  return parsed.type === 'error';
+}
+
+function detectRateLimitByKeyword(output: string): number | null {
+  return output.split('\n').some(lineLooksLikeRateLimit) ? DEFAULT_RATE_LIMIT_BACKOFF_MS : null;
+}
+
 const claude: HarnessAdapter = {
   kind: 'claude',
   binary: 'claude',
@@ -150,6 +193,7 @@ const claude: HarnessAdapter = {
       env?.CLAUDE_CONFIG_DIR ?? loadConfig().profileDir.claude ?? path.join(env?.HOME ?? os.homedir(), '.claude');
     return [path.join(dir, '.credentials.json')];
   },
+  detectRateLimit: detectRateLimitByKeyword,
 };
 
 const codex: HarnessAdapter = {
@@ -188,6 +232,7 @@ const codex: HarnessAdapter = {
     const dir = env?.CODEX_HOME ?? loadConfig().profileDir.codex ?? path.join(env?.HOME ?? os.homedir(), '.codex');
     return [path.join(dir, 'auth.json')];
   },
+  detectRateLimit: detectRateLimitByKeyword,
 };
 
 const opencode: HarnessAdapter = {

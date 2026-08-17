@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
   classifyTier,
@@ -7,6 +8,8 @@ import {
   type BudgetState,
   type BudgetTier,
 } from '../../src/argus/budget.js';
+import { ArgusManager } from '../../src/argus/manager.js';
+import { createQuota, recordQuotaUsage, setQuotaThrottle } from '../../src/argus/quota.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo } from '../helpers.js';
 
@@ -22,6 +25,7 @@ function fixtureBudget(tier: BudgetTier, spent: number, ceiling: number): Budget
     reviewQueueDepth: 0,
     oldestReviewAgeSec: null,
     nextResetAt: null,
+    throttledUntil: null,
   };
 }
 
@@ -156,5 +160,51 @@ describe('reviewBatchSize', () => {
     expect(reviewBatchSize(pausedBelowCeiling, 8, 1_000, false)).toBe(0);
     expect(reviewBatchSize(pausedBelowCeiling, 8, 1_000, true)).toBe(8);
     expect(() => reviewBatchSize(atCeiling, 8, 1_000, true)).toThrow(/exhausted/);
+  });
+});
+
+describe('budgetState with a quota', () => {
+  it('sources spend from the quota ledger instead of local session telemetry', () => {
+    const fixture = makeRepo();
+    try {
+      const quotaId = `quota-${crypto.randomUUID().slice(0, 8)}`;
+      createQuota(quotaId, { maxTokens: 1000, windowSec: 3600 });
+      recordQuotaUsage(quotaId, 400);
+      recordQuotaUsage(quotaId, 100);
+      const manager = new ArgusManager(fixture.root, async () => '{}');
+      const argus = manager.start({ quotaId });
+      const state = budgetState(fixture.root, argus.id);
+      expect(state.spent).toBe(500);
+      expect(state.ceiling).toBe(1000);
+      expect(state.tier).toBe('normal');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('reports the quota throttle on BudgetState', () => {
+    const fixture = makeRepo();
+    try {
+      const quotaId = `quota-${crypto.randomUUID().slice(0, 8)}`;
+      createQuota(quotaId, { maxTokens: 1000, windowSec: 3600 });
+      const until = Date.now() + 60_000;
+      setQuotaThrottle(quotaId, until);
+      const manager = new ArgusManager(fixture.root, async () => '{}');
+      const argus = manager.start({ quotaId });
+      expect(budgetState(fixture.root, argus.id).throttledUntil).toBe(until);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('leaves a private mission (no quota) with a null throttle by default', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, async () => '{}');
+      const argus = manager.start({});
+      expect(budgetState(fixture.root, argus.id).throttledUntil).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

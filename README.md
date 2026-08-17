@@ -151,9 +151,13 @@ deck argus start \
 | Command | Description |
 | :--- | :--- |
 | `deck argus init <name> [options]` | Scaffold a Mission note (`--template <feature\|refactor\|audit\|bugfix>`, `--title <title>`) |
-| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`, `--conventions <note-id>`) |
+| `deck argus start [options]` | Start the Argus fleet loop (`--mission <note-id>`, `--pulse <duration>`, `--children <n>`, `--risky-tools`, `--brain-harness <claude\|codex>`, `--brain-plan-model <model>`, `--brain-review-model <model>`, `--worker-harness <opencode\|gemini>`, `--budget-window <duration>`, `--budget-max-tokens <count>`, `--conventions <note-id>`, `--quota <id>`) |
 | `deck argus status [id] [--json]` | View fleet hierarchy, active children, and pulse progress |
 | `deck argus stop <id>` | Stop an Argus fleet and terminate all child subagents |
+| `deck argus pause <id>` | Pause a running mission without ending it |
+| `deck argus resume <id>` | Resume a paused mission |
+| `deck quota create <id> --max-tokens <count> --window <duration>` | Create a named token budget pool that multiple missions, in this project or others, can attach to with `--quota` |
+| `deck quota list` / `deck quota show <id>` | List or inspect quotas |
 | `deck argus budget <id> [--json]` | Show brain token spend, review queue depth, and the next rolling reset |
 
 ### Argus behavior notes
@@ -163,6 +167,10 @@ deck argus start \
 - Review is two-tier: tier 1 (tier `brain-review-model`) sees only summaries and diffstat, and tier 2 (tier `brain-plan-model`) may read bounded, non-secret files from the worker worktree only when `need_files` is returned.
 - The token budget degrades by spend: below 60% reviews one task at a time, 60-80% batches four, 80-95% batches everything once four tasks queue or a task ages 30 minutes, and at or above 95% reviews pause. `force-review` may ignore the pause and batching below 100% but never the ceiling.
 - Worker questions are answered independently of the mission pulse, so `ask_manager` is not delayed by a long `--pulse`.
+- `--quota <id>` attaches a mission to a named, shared token budget pool created with `deck quota create`, instead of the mission owning its own `--budget-window`/`--budget-max-tokens`; the two are mutually exclusive. Every mission attached to the same quota, in this project or a different one, shares one ceiling and one rolling window.
+- A real rate-limit response from the brain harness sets a throttle on the mission's quota (or the mission itself, if unattached) that every attached mission observes immediately, skipping brain calls until it clears, distinct from and in addition to the self-imposed token ceiling.
+- `deck argus pause`/`resume` suspends and resumes a mission without ending it; workers already dispatched keep running, but no new dispatch, gate draining, review, or brain call happens while paused.
+- A `.flightdeck/hooks/on-event/*.sh` script, run the same way as an existing post-create hook, fires on every mission progress event (`task_blocked`, `brain_abandoned`, `argus_paused`, a quota entering `throttled`, and others) with `FLIGHTDECK_EVENT`, `FLIGHTDECK_ARGUS_ID`, `FLIGHTDECK_SESSION`, and `FLIGHTDECK_MESSAGE` set.
 
 ### Fleet Window & Controls
 | Command | Description |

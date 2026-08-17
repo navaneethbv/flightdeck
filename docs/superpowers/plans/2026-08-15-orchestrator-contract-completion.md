@@ -1,7 +1,7 @@
 # Orchestrator Contract Completion Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
-> Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Close the Argus control loop so questions wake the brain promptly, failed or rejected tasks return to their worker, budget rules are enforced exactly, and tier 2 review reads only safe requested files.
 
@@ -85,7 +85,7 @@ Task 7 depends on all earlier tasks.
 - Consumes: a note id selected through `deck argus start --conventions <note-id>`.
 - Produces: `Argus.conventionsNoteId`, consistent plan and answer context, and `task_get.projectConventions`.
 
-- [ ] **Step 1: Write failing schema, worker-tool, and prompt tests**
+- [x] **Step 1: Write failing schema, worker-tool, and prompt tests**
 
 Add a schema assertion for `argus.conventions_note_id`.
 Add this worker-tool assertion after seeding an Argus row and conventions note:
@@ -105,7 +105,7 @@ expect(brain.prompts.plan).toContain('Project conventions:\nUse strict ESM and r
 expect(brain.prompts.answer).toContain('Project conventions:\nUse strict ESM and run npm test.');
 ```
 
-- [ ] **Step 2: Run the focused tests and verify they fail**
+- [x] **Step 2: Run the focused tests and verify they fail**
 
 Run:
 
@@ -116,13 +116,13 @@ npx vitest run test/unit/schema.test.ts test/unit/worker-tools.test.ts test/inte
 
 Expected: the column, returned field, and prompt sections are absent.
 
-- [ ] **Step 3: Add the schema and typed field**
+- [x] **Step 3: Add the schema and typed field**
 
 Add `conventions_note_id TEXT` to the base `CREATE TABLE argus` statement and to the late `ALTER TABLE` migration list.
 Add `conventionsNoteId: string | null` to `Argus` and `conventionsNoteId?: string` to `StartArgusOptions`.
 Persist and map the field through the same code path introduced by the runtime-readiness plan.
 
-- [ ] **Step 4: Validate the selected note and centralize context loading**
+- [x] **Step 4: Validate the selected note and centralize context loading**
 
 Before creating any row, reject a supplied id that `NotesStore.readNote()` cannot resolve:
 
@@ -148,13 +148,13 @@ Use it in `plan()` and `answerQuestions()`.
 Include a `Project conventions:` section only when the body is non-empty.
 Do not guess conventions from README, CLAUDE.md, or an arbitrary note title.
 
-- [ ] **Step 5: Return conventions through `task_get`**
+- [x] **Step 5: Return conventions through `task_get`**
 
 Resolve the caller's session, then its `argus_parent`, then `conventions_note_id`.
 Return `projectConventions: string | null` beside the task fields.
 Do not expose the mission note through this tool because the task spec is the worker's scoped assignment.
 
-- [ ] **Step 6: Add the CLI flag and verify**
+- [x] **Step 6: Add the CLI flag and verify**
 
 Register:
 
@@ -172,7 +172,7 @@ npx vitest run test/unit/schema.test.ts test/unit/worker-tools.test.ts test/inte
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/core/state.ts src/core/types.ts src/argus/manager.ts src/mcp/tools.ts src/cli/commands/argus.ts test/unit/schema.test.ts test/unit/worker-tools.test.ts test/integration/orchestration.test.ts
@@ -194,13 +194,13 @@ git commit -m "feat(argus): include project conventions in brain and worker cont
 - Consumes: unresolved rows from `QuestionQueue.pending(argusId)` and tasks in `reported`.
 - Produces: a manager loop that notices worker events within 250 ms while retaining the configured mission pulse interval.
 
-- [ ] **Step 1: Add a failing long-pulse question test**
+- [x] **Step 1: Add a failing long-pulse question test**
 
 Start the Argus loop in a child process with `pulse_sec = 3600`, a fake answer brain, and `question_timeout_sec = 3`.
 After the initial planning pulse, enqueue a question through the real `ask_manager` MCP tool.
 Assert the tool returns the fake answer within three seconds and the brain receives exactly one answer call.
 
-- [ ] **Step 2: Run the test and verify the current timeout behavior**
+- [x] **Step 2: Run the test and verify the current timeout behavior**
 
 Run:
 
@@ -211,7 +211,7 @@ npx vitest run test/integration/orchestration.test.ts -t "answers a question bef
 
 Expected: the tool returns the proceed-on-best-judgment timeout directive because the manager sleeps for an hour.
 
-- [ ] **Step 3: Separate cheap scheduler checks from mission pulses**
+- [x] **Step 3: Separate cheap scheduler checks from mission pulses**
 
 Replace the single long sleep in `runForever()` with a 250 ms scheduler interval.
 Only call `pulse()` when the next configured pulse is due.
@@ -250,7 +250,7 @@ Keep the loop sequential so two answer calls cannot race within one manager proc
 It must not treat an intentionally batched `in_review` queue as continuous work, or the 250 ms loop would repeatedly reconsider a queue that is waiting for four tasks or 30 minutes.
 The normal mission pulse remains responsible for reconsidering an aged batched queue.
 
-- [ ] **Step 4: Verify prompt wake-up and no idle brain calls**
+- [x] **Step 4: Verify prompt wake-up and no idle brain calls**
 
 Add an assertion that a two-second idle interval causes zero additional brain calls.
 Add a second long-pulse test where a worker calls `report_done`.
@@ -264,7 +264,7 @@ npx vitest run test/integration/orchestration.test.ts test/e2e/argus.test.ts
 
 Expected: the long-pulse question is answered, reported work reaches gates and review promptly, and the idle brain call count stays unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/argus/manager.ts test/integration/orchestration.test.ts test/e2e/argus.test.ts
@@ -288,7 +288,7 @@ git commit -m "fix(argus): process worker events between mission pulses"
 - Consumes: tasks in `revising` plus their existing assignee session and `verdictReason`.
 - Produces: explicit `reported -> gating` and `revising -> assigned` transitions, `ArgusManager.resumeRevisions(argusId)`, and attempt-limit enforcement for gate and review failures.
 
-- [ ] **Step 1: Write failing board transition tests**
+- [x] **Step 1: Write failing board transition tests**
 
 Add:
 
@@ -306,7 +306,7 @@ it('returns a revision to assigned without clearing feedback or attempts', () =>
 Also assert that `beginGating(task.id)` accepts only a `reported` task and returns status `gating`.
 Assert `recordGates` accepts a `gating` task and moves it to `in_review` or `revising`.
 
-- [ ] **Step 2: Add a failing closed-loop integration test**
+- [x] **Step 2: Add a failing closed-loop integration test**
 
 Use a fake worker executable that records each prompt to a file.
 Seed an assigned task, report it, return a failed gate, and run one manager pulse.
@@ -314,7 +314,7 @@ Assert the same session id and worktree are reused, the second prompt contains t
 
 Add the same assertion for a brain `revise` verdict.
 
-- [ ] **Step 3: Implement explicit board transitions**
+- [x] **Step 3: Implement explicit board transitions**
 
 Add:
 
@@ -344,7 +344,7 @@ Change `runGatesForReported` to call `beginGating` before it starts either comma
 Change `recordGates` to require `gating`.
 At manager startup, move any task left in `gating` by an interrupted process back to `reported` and write `gates_recovered` to progress.
 
-- [ ] **Step 4: Implement `resumeRevisions()`**
+- [x] **Step 4: Implement `resumeRevisions()`**
 
 For each revising task:
 
@@ -374,13 +374,13 @@ const prompt = [
 ].join('\n');
 ```
 
-- [ ] **Step 5: Recover workers that exit without reporting**
+- [x] **Step 5: Recover workers that exit without reporting**
 
 Before dispatch, scan assigned tasks whose session status is `stopped` or `failed`.
 Move each to `revising` with `worker exited before report_done`, increment attempts once, and let `resumeRevisions()` restart it.
 Do not treat a task already in `reported`, `in_review`, or `done` as orphaned.
 
-- [ ] **Step 6: Integrate the transition into every path**
+- [x] **Step 6: Integrate the transition into every path**
 
 Call `resumeRevisions(id)` after gates and after review decisions in `pulse()`.
 Ensure the force-review path also resumes any revisions it creates.
@@ -388,7 +388,7 @@ Apply the maximum-attempt rule to gate failures, review revisions, `need_files` 
 At `runForever` startup, inspect `gateCommandsFromConfig()`.
 When both commands are empty, write one `gates_disabled` progress row and emit one warning that work will go directly to brain review.
 
-- [ ] **Step 7: Verify the closed loop**
+- [x] **Step 7: Verify the closed loop**
 
 Run:
 
@@ -399,7 +399,7 @@ npx vitest run test/unit/board.test.ts test/integration/orchestration.test.ts te
 
 Expected: gating is explicit and recoverable, failures re-prompt the same worker, claimed workers are not interrupted, empty gates warn once, and tasks block at the exact configured limit.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/argus/board.ts src/argus/manager.ts test/unit/board.test.ts test/integration/orchestration.test.ts test/e2e/argus.test.ts
@@ -426,7 +426,7 @@ git commit -m "fix(argus): close the worker revision loop"
 - Consumes: `BudgetState`, queued task timestamps, current time, and `force`.
 - Produces: `reviewBatchSize(...)`, `nextResetAt`, backlog depth, and `drainReviews(id, { force })`.
 
-- [ ] **Step 1: Write table-driven failing policy tests**
+- [x] **Step 1: Write table-driven failing policy tests**
 
 Add a pure helper contract:
 
@@ -443,14 +443,14 @@ expect(() => reviewBatchSize(atCeiling, 8, 1_000, true)).toThrow(/exhausted/);
 
 Use complete `BudgetState` fixtures rather than positional booleans in the real test.
 
-- [ ] **Step 2: Add failing force-review integration coverage**
+- [x] **Step 2: Add failing force-review integration coverage**
 
 Seed eight `in_review` tasks and telemetry at 96 percent of the ceiling.
 Assert normal drain makes zero brain calls.
 Assert `Override.forceReview` makes one batched brain call containing all eight task ids.
 Seed telemetry at 100 percent and assert force-review throws without a brain call.
 
-- [ ] **Step 3: Implement the pure batch decision**
+- [x] **Step 3: Implement the pure batch decision**
 
 ```typescript
 export function reviewBatchSize(
@@ -471,7 +471,7 @@ export function reviewBatchSize(
 }
 ```
 
-- [ ] **Step 4: Calculate honest backlog and reset projection**
+- [x] **Step 4: Calculate honest backlog and reset projection**
 
 Extend `BudgetState` with:
 
@@ -485,7 +485,7 @@ Set `nextResetAt` to the oldest in-window brain session's `started_at + budget_w
 Return null when no in-window brain usage exists.
 Do not claim that the full budget resets at once in a rolling window.
 
-- [ ] **Step 5: Make force a manager option, not an override-side approximation**
+- [x] **Step 5: Make force a manager option, not an override-side approximation**
 
 Change the signature to:
 
@@ -497,12 +497,12 @@ Use `reviewBatchSize` to select the batch.
 Change `Override.forceReview` to call `manager.drainReviews(argusId, { force: true })`.
 Remove its duplicated pre-check.
 
-- [ ] **Step 6: Surface paused state without invented values**
+- [x] **Step 6: Surface paused state without invented values**
 
 In `deck argus budget`, print queue depth and `next reset` only when non-null.
 In the Fleet console, show the same fields and render a blank or `unknown` label when no reset can be calculated.
 
-- [ ] **Step 7: Verify all budget paths**
+- [x] **Step 7: Verify all budget paths**
 
 Run:
 
@@ -513,7 +513,7 @@ npx vitest run test/unit/budget.test.ts test/unit/override.test.ts test/integrat
 
 Expected: every threshold, wait condition, and force path passes.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/argus/budget.ts src/argus/manager.ts src/argus/override.ts src/cli/commands/argus.ts src/cli/commands/fleet.tsx test/unit/budget.test.ts test/unit/override.test.ts test/integration/orchestration.test.ts
@@ -536,7 +536,7 @@ git commit -m "fix(argus): enforce review budget batching and force semantics"
 - Consumes: worker worktree, brain-requested relative paths, and the tier 1 task context.
 - Produces: `loadReviewFiles(worktree, paths): ReviewFile[]` and one bounded tier 2 brain call using `brain_plan_model`.
 
-- [ ] **Step 1: Write failing file-loader security tests**
+- [x] **Step 1: Write failing file-loader security tests**
 
 Define:
 
@@ -560,7 +560,7 @@ Test all of these cases:
 - More than eight requested paths produces only eight entries.
 - The combined attached content never exceeds 128 KiB.
 
-- [ ] **Step 2: Run the new unit test and verify it fails to import**
+- [x] **Step 2: Run the new unit test and verify it fails to import**
 
 Run:
 
@@ -571,7 +571,7 @@ npx vitest run test/unit/review-files.test.ts
 
 Expected: module-not-found failure.
 
-- [ ] **Step 3: Implement the loader**
+- [x] **Step 3: Implement the loader**
 
 Use `path.resolve(worktree, requested)` and `fs.realpathSync`.
 Require both the resolved candidate and real path to start with `${realWorktree}${path.sep}`.
@@ -587,7 +587,7 @@ const MAX_FILE_BYTES = 32 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024;
 ```
 
-- [ ] **Step 4: Add failing two-call review coverage**
+- [x] **Step 4: Add failing two-call review coverage**
 
 Seed one task in review and make the fake brain return `need_files` from tier 1 and `accept` from tier 2.
 Assert:
@@ -605,7 +605,7 @@ expect(board.get(task.id)?.status).toBe('done');
 Add cases where tier 2 is disabled, where the path is denied, and where tier 2 itself returns `need_files`.
 The disabled and repeated-request cases must move the task to `revising` once and must not leave it in `in_review`.
 
-- [ ] **Step 5: Implement tier 2 in `drainReviews`**
+- [x] **Step 5: Implement tier 2 in `drainReviews`**
 
 After a tier 1 `need_files` verdict:
 
@@ -620,7 +620,7 @@ After a tier 1 `need_files` verdict:
 
 Do not combine tier 2 requests from different worktrees into one prompt.
 
-- [ ] **Step 6: Verify tier 1 privacy and tier 2 behavior**
+- [x] **Step 6: Verify tier 1 privacy and tier 2 behavior**
 
 Run:
 
@@ -631,7 +631,7 @@ npx vitest run test/unit/review-files.test.ts test/integration/orchestration.tes
 
 Expected: tier 1 contains no file contents, tier 2 contains only allowed bounded files, and every `need_files` path terminates.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/argus/review-files.ts test/unit/review-files.test.ts src/argus/manager.ts test/integration/orchestration.test.ts
@@ -654,7 +654,7 @@ git commit -m "feat(argus): add bounded tier two file review"
 - Consumes: the existing one-retry `brainJson` path.
 - Produces: `BrainContractError` and terminal, non-repeating handling for plan, review, tier 2, and answer failures.
 
-- [ ] **Step 1: Write failing containment tests**
+- [x] **Step 1: Write failing containment tests**
 
 Add one test per call type where the fake brain returns malformed output twice.
 Assert:
@@ -667,7 +667,7 @@ Assert:
 Add review contract cases where the response omits one requested task id, repeats a task id, or returns an id outside the requested batch.
 Each must be treated as malformed output and receive exactly one correction attempt.
 
-- [ ] **Step 2: Run the tests and verify repeated or crashing behavior**
+- [x] **Step 2: Run the tests and verify repeated or crashing behavior**
 
 Run:
 
@@ -678,7 +678,7 @@ npx vitest run test/integration/orchestration.test.ts -t "malformed"
 
 Expected: current review and answer errors escape the manager path, and review work remains eligible to consume more calls later.
 
-- [ ] **Step 3: Add a typed terminal contract error**
+- [x] **Step 3: Add a typed terminal contract error**
 
 In `src/argus/brain.ts`, export:
 
@@ -717,7 +717,7 @@ function validateReviewCoverage(tasks: Task[], verdicts: Verdict[]): Verdict[] {
 Pass this validator inside the `brainJson` parse callback so semantic failures receive the same single correction attempt as invalid JSON.
 Use the same validator with a one-task array for tier 2.
 
-- [ ] **Step 4: Handle each call type once**
+- [x] **Step 4: Handle each call type once**
 
 Use narrow catches around the call sites:
 
@@ -729,7 +729,7 @@ Use narrow catches around the call sites:
 Do not use a broad catch around the whole pulse.
 Unexpected database, filesystem, or process errors must still surface normally.
 
-- [ ] **Step 5: Verify containment**
+- [x] **Step 5: Verify containment**
 
 Run:
 
@@ -740,7 +740,7 @@ npx vitest run test/unit/brain-contract.test.ts test/integration/orchestration.t
 
 Expected: every malformed path makes exactly two calls and reaches a state that cannot be retried automatically.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/argus/brain.ts src/argus/manager.ts test/unit/brain-contract.test.ts test/integration/orchestration.test.ts
@@ -762,7 +762,7 @@ git commit -m "fix(argus): contain malformed brain responses"
 - Consumes: Tasks 1 through 6.
 - Produces: one hermetic end-to-end lifecycle test and accurate operator documentation.
 
-- [ ] **Step 1: Add a full fake-harness E2E**
+- [x] **Step 1: Add a full fake-harness E2E**
 
 Drive this exact sequence through real CLI processes and real MCP calls against a disposable repository:
 
@@ -777,12 +777,12 @@ Drive this exact sequence through real CLI processes and real MCP calls against 
 9. The task reaches `done` with `attempts = 1`.
 10. Brain invocation count is exactly three: plan, tier 1, and tier 2.
 
-- [ ] **Step 2: Add a paused-budget E2E**
+- [x] **Step 2: Add a paused-budget E2E**
 
 Seed the manager above 95 percent but below 100 percent.
 Assert workers and gates continue, review stays queued, queue depth and next reset appear in `deck argus budget --json`, and a force-review drains the queue.
 
-- [ ] **Step 3: Update README and CLAUDE.md narrowly**
+- [x] **Step 3: Update README and CLAUDE.md narrowly**
 
 Document:
 
@@ -794,7 +794,7 @@ Document:
 
 Remove any stale description of bullet-indexed Argus scheduling.
 
-- [ ] **Step 4: Run every gate**
+- [x] **Step 4: Run every gate**
 
 Run:
 
@@ -807,7 +807,7 @@ git diff --check
 
 Expected: every command exits zero and no test is skipped except explicit live-harness or missing-tmux guards.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add test/e2e/argus.test.ts README.md CLAUDE.md

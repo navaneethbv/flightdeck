@@ -1,6 +1,7 @@
 import type { SQLInputValue } from 'node:sqlite';
 import { getDb, now } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
+import { getQuota, quotaSpent, quotaOldestUsage } from './quota.js';
 
 export type BudgetTier = 'normal' | 'conserve' | 'batch' | 'paused';
 
@@ -35,6 +36,14 @@ export interface BudgetState {
    * resets all at once, so this is a projection, not a full-budget reset.
    */
   nextResetAt: number | null;
+  /**
+   * Real provider rate limit observed on a previous brain call, or null.
+   * Set on the mission's quota when attached to one, or on the mission's own
+   * row otherwise, and checked before every brain call regardless of source.
+   */
+  throttledUntil: number | null;
+  /** Named token budget pool attached with --quota, or null when using private budget. */
+  quotaId: string | null;
 }
 
 export function classifyTier(fraction: number): BudgetTier {
@@ -81,20 +90,34 @@ export function reviewBatchSize(
   return 0;
 }
 
-export function budgetState(projectRoot: string, argusId: string): BudgetState {
-  const root = normalizeProjectRoot(projectRoot);
-  const db = getDb(root);
-  const argus = db
-    .prepare(
-      'SELECT budget_window_sec, budget_max_tokens, budget_count_cache_reads FROM argus WHERE id = ?'
-    )
-    .get(argusId) as Record<string, unknown> | undefined;
-  if (!argus) throw new Error(`argus "${argusId}" not found`);
+interface UsageSource {
+  ceiling: number;
+  windowSec: number;
+  spent: number;
+  throttledUntil: number | null;
+  nextResetAt: number | null;
+}
 
+function resolveQuotaUsage(quotaId: string): UsageSource {
+  const quota = getQuota(quotaId);
+  if (!quota) throw new Error(`quota "${quotaId}" not found`);
+  const spent = quotaSpent(quotaId, quota.windowSec);
+  const oldest = quotaOldestUsage(quotaId, quota.windowSec);
+  const nextResetAt = oldest === null ? null : oldest + quota.windowSec * 1000;
+  return {
+    ceiling: quota.maxTokens,
+    windowSec: quota.windowSec,
+    spent,
+    throttledUntil: quota.throttledUntil,
+    nextResetAt,
+  };
+}
+
+function resolveMissionUsage(db: ReturnType<typeof getDb>, argusId: string, argus: Record<string, unknown>): UsageSource {
   const ceiling = Number(argus.budget_max_tokens);
-  const windowStart = now() - Number(argus.budget_window_sec) * 1000;
+  const windowSec = Number(argus.budget_window_sec);
   const countCache = Number(argus.budget_count_cache_reads) === 1;
-
+  const windowStart = now() - windowSec * 1000;
   const cacheTerm = countCache ? ' + COALESCE(t.cached_tokens, 0)' : '';
   const row = db
     .prepare(
@@ -104,20 +127,42 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
        WHERE s.policy = 'brain' AND s.argus_parent = ? AND s.started_at > ?`
     )
     .get(...([argusId, windowStart] as SQLInputValue[])) as { spent: number };
-
   const oldest = db
-    .prepare(
-      'SELECT MIN(started_at) AS started FROM sessions WHERE policy = ? AND argus_parent = ? AND started_at > ?'
-    )
+    .prepare('SELECT MIN(started_at) AS started FROM sessions WHERE policy = ? AND argus_parent = ? AND started_at > ?')
     .get(...(['brain', argusId, windowStart] as SQLInputValue[])) as { started: number | null };
+  const nextResetAt = oldest.started === null ? null : oldest.started + windowSec * 1000;
+  const throttledUntil =
+    argus.throttled_until === null || argus.throttled_until === undefined ? null : Number(argus.throttled_until);
+  return {
+    ceiling,
+    windowSec,
+    spent: Number(row.spent),
+    throttledUntil,
+    nextResetAt,
+  };
+}
 
+export function budgetState(projectRoot: string, argusId: string): BudgetState {
+  const root = normalizeProjectRoot(projectRoot);
+  const db = getDb(root);
+  const argus = db
+    .prepare(
+      'SELECT budget_window_sec, budget_max_tokens, budget_count_cache_reads, quota_id, throttled_until FROM argus WHERE id = ?'
+    )
+    .get(argusId) as Record<string, unknown> | undefined;
+  if (!argus) throw new Error(`argus "${argusId}" not found`);
+
+  const quotaId = typeof argus.quota_id === 'string' ? argus.quota_id : null;
+  const usage = quotaId ? resolveQuotaUsage(quotaId) : resolveMissionUsage(db, argusId, argus);
+  const { ceiling, windowSec, spent, throttledUntil, nextResetAt } = usage;
+
+  const windowStart = now() - windowSec * 1000;
   const queued = db
     .prepare(
       'SELECT COUNT(*) AS n, MIN(COALESCE(review_queued_at, created_at)) AS oldest FROM tasks WHERE argus_id = ? AND status = ?'
     )
     .get(...([argusId, 'in_review'] as SQLInputValue[])) as { n: number; oldest: number | null };
 
-  const spent = Number(row.spent);
   const fraction = ceiling > 0 ? spent / ceiling : 1;
   const tier = classifyTier(fraction);
   return {
@@ -130,6 +175,8 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
     windowStart,
     reviewQueueDepth: Number(queued.n),
     oldestReviewAgeSec: queued.oldest === null ? null : Math.max(0, (now() - queued.oldest) / 1000),
-    nextResetAt: oldest.started === null ? null : oldest.started + Number(argus.budget_window_sec) * 1000,
+    nextResetAt,
+    throttledUntil,
+    quotaId,
   };
 }

@@ -16,12 +16,15 @@ import type { Task } from '../../core/types.js';
 export interface ConsoleSnapshot {
   sessions: ReturnType<FleetManager['fleetSessions']>;
   argusId: string | null;
+  argusStatus: string | null;
   tasks: Task[];
   reviewQueueDepth: number;
   nextBudgetResetAt: number | null;
   spent: number;
   ceiling: number;
   tier: string;
+  quotaId: string | null;
+  throttledUntil: number | null;
   progress: string[];
   fleetError: string | null;
   tick: number;
@@ -38,7 +41,7 @@ const TASK_ORDER: Record<string, number> = {
   blocked: 7,
 };
 
-function sortTasks(tasks: Task[]): Task[] {
+export function sortTasks(tasks: Task[]): Task[] {
   return [...tasks].sort(
     (a, b) =>
       (TASK_ORDER[a.status] ?? 99) - (TASK_ORDER[b.status] ?? 99) ||
@@ -51,18 +54,21 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
+export function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   const fleet = new FleetManager(projectRoot);
   fleet.reconcile();
   const empty = {
     sessions: fleet.fleetSessions(),
     argusId: null,
+    argusStatus: null,
     tasks: [] as Task[],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
+    quotaId: null,
+    throttledUntil: null,
     progress: [] as string[],
     fleetError: null as string | null,
   };
@@ -90,12 +96,15 @@ function loadSnapshot(projectRoot: string): Omit<ConsoleSnapshot, 'tick'> {
   return {
     sessions: fleet.fleetSessions(),
     argusId: argus.id,
+    argusStatus: argus.status,
     tasks: sortTasks(all),
     reviewQueueDepth: budget.reviewQueueDepth,
     nextBudgetResetAt: budget.nextResetAt,
     spent: budget.spent,
     ceiling: budget.ceiling,
     tier: budget.tier,
+    quotaId: argus.quotaId,
+    throttledUntil: budget.throttledUntil,
     progress,
     fleetError: null,
   };
@@ -108,12 +117,15 @@ function emptySnapshot(): Omit<ConsoleSnapshot, 'tick'> {
   return {
     sessions: [],
     argusId: null,
+    argusStatus: null,
     tasks: [],
     reviewQueueDepth: 0,
     nextBudgetResetAt: null,
     spent: 0,
     ceiling: 0,
     tier: 'normal',
+    quotaId: null,
+    throttledUntil: null,
     progress: [],
     fleetError: null,
   };
@@ -208,6 +220,7 @@ export function FleetConsoleView({
       <Box marginBottom={1}>
         <Text bold color="cyan">{'flightdeck fleet  '}</Text>
         <Text dimColor>{'select with Tab/arrows  '}</Text>
+        {snap.argusStatus === 'paused' && <Text color="yellow">{'paused'}</Text>}
       </Box>
 
       {snap.fleetError !== null && <Text color="red">{snap.fleetError}</Text>}
@@ -261,6 +274,19 @@ export function FleetConsoleView({
           <Text>{`  next reset ${new Date(snap.nextBudgetResetAt).toLocaleTimeString()}`}</Text>
         )}
       </Box>
+      {snap.quotaId !== null && (
+        <Box marginBottom={1}>
+          <Text dimColor>{`  quota: ${snap.quotaId}`}</Text>
+          {snap.throttledUntil !== null && snap.throttledUntil > Date.now() && (
+            <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
+          )}
+        </Box>
+      )}
+      {snap.quotaId === null && snap.throttledUntil !== null && snap.throttledUntil > Date.now() && (
+        <Box marginBottom={1}>
+          <Text color="red">{`  throttled until ${new Date(snap.throttledUntil).toLocaleTimeString()}`}</Text>
+        </Box>
+      )}
 
       <Text bold underline>Decisions</Text>
       <Box flexDirection="column" marginBottom={1}>
@@ -291,7 +317,7 @@ function eventFromKey(key: { tab?: boolean; upArrow?: boolean; downArrow?: boole
   return null;
 }
 
-function resolveConsoleEvent(
+export function resolveConsoleEvent(
   input: string,
   key: { tab?: boolean; upArrow?: boolean; downArrow?: boolean; escape?: boolean; return?: boolean; backspace?: boolean; ctrl?: boolean },
   pending: FleetConsoleState['pendingAction']
@@ -306,7 +332,7 @@ function resolveConsoleEvent(
   return null;
 }
 
-function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
+export function FleetConsole({ projectRoot }: { readonly projectRoot: string }): ReactElement {
   const snap = useConsoleSnapshot(projectRoot);
   const [state, setState] = useState<FleetConsoleState>(initialState);
   const [message, setMessage] = useState('');
@@ -389,7 +415,7 @@ function requireTmux(): void {
  * Explicit Argus selection for task overrides. The newest fleet is never
  * guessed: zero fleets fail, and more than one fleet requires `--argus`.
  */
-function resolveArgusId(projectRoot: string, argusId: string | undefined): string {
+export function resolveArgusId(projectRoot: string, argusId: string | undefined): string {
   if (argusId !== undefined) return argusId;
   const fleets = new ArgusManager(projectRoot).list();
   if (fleets.length === 0) throw new Error('no argus fleet exists in this project');
@@ -548,9 +574,12 @@ export function registerFleet(program: Command): void {
       .description(description)
       .option('--argus <id>', 'Argus fleet id (required when more than one fleet exists)')
       .option('--json', 'output JSON')
-      .option('--project <path>', 'project root (default: current directory)')
-      .action((taskId: string, reason: string | undefined, opts: Record<string, string | boolean>) => {
+      .action((...actionArgs: unknown[]) => {
         try {
+          const cmd = actionArgs.at(-1) as Command;
+          const opts = cmd.optsWithGlobals() as Record<string, string | boolean>;
+          const taskId = String(actionArgs[0]);
+          const reason = actionArgs.length > 2 && typeof actionArgs[1] === 'string' ? actionArgs[1] : undefined;
           const projectRoot = projectRootOf(opts.project as string | undefined);
           const argusId = resolveArgusId(projectRoot, opts.argus as string | undefined);
           const result = run(new FleetActions(projectRoot), taskId, argusId, reason ?? '');

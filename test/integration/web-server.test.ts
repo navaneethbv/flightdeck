@@ -4,6 +4,9 @@ import path from 'node:path';
 import net from 'node:net';
 import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
+import { ArgusManager } from '../../src/argus/manager.js';
+import { NotesStore } from '../../src/notes/store.js';
+import { createQuota } from '../../src/argus/quota.js';
 import { getDb, now } from '../../src/core/state.js';
 import { makeRepo } from '../helpers.js';
 
@@ -591,6 +594,70 @@ describe('Web GUI Server', () => {
       expect(sm.getLogs('../canary')).toBe('');
       expect(sm.getLogs('../../../secret')).toBe('');
     } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('serves argus fleet, budget, and quota details via the web API', async () => {
+    const fixture = makeRepo();
+    const { server, port, token } = await startServer({ projectRoot: fixture.root });
+    try {
+      createQuota('web-quota', { maxTokens: 100_000, windowSec: 3600, countCacheReads: true });
+      const mission = new NotesStore(fixture.root).createNote('mission', '- do work');
+      const manager = new ArgusManager(fixture.root);
+      const argus = manager.start({ missionNoteId: mission.id, quotaId: 'web-quota' });
+
+      const stateRes = await fetch(`${base(port)}/api/state`, authed(token));
+      expect(stateRes.status).toBe(200);
+      const state = await stateRes.json();
+      expect(state.argus).toHaveLength(1);
+      expect(state.argus[0].quotaId).toBe('web-quota');
+
+      const fleetRes = await fetch(`${base(port)}/api/argus/${argus.id}/fleet`, authed(token));
+      expect(fleetRes.status).toBe(200);
+      const fleet = await fleetRes.json();
+      expect(fleet.argus.id).toBe(argus.id);
+      expect(fleet.budget.quotaId).toBe('web-quota');
+      expect(fleet.quota.id).toBe('web-quota');
+    } finally {
+      await server.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses and resumes an argus fleet through the REST API', async () => {
+    const fixture = makeRepo();
+    const { server, port, token } = await startServer({ projectRoot: fixture.root });
+    try {
+      const mission = new NotesStore(fixture.root).createNote('mission', '- do work');
+      const manager = new ArgusManager(fixture.root);
+      const argus = manager.start({ missionNoteId: mission.id });
+      getDb(fixture.root).prepare("UPDATE argus SET status = 'running' WHERE id = ?").run(argus.id);
+
+      const pauseRes = await fetch(`${base(port)}/api/argus/${argus.id}/pause`, authed(token, { method: 'POST' }));
+      expect(pauseRes.status).toBe(200);
+      expect(manager.get(argus.id)?.status).toBe('paused');
+
+      const resumeRes = await fetch(`${base(port)}/api/argus/${argus.id}/resume`, authed(token, { method: 'POST' }));
+      expect(resumeRes.status).toBe(200);
+      expect(manager.get(argus.id)?.status).toBe('running');
+    } finally {
+      await server.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it('serves global quotas list via the web API', async () => {
+    const fixture = makeRepo();
+    const { server, port, token } = await startServer({ projectRoot: fixture.root });
+    try {
+      createQuota('listed-quota', { maxTokens: 50_000, windowSec: 1800, countCacheReads: false });
+      const quotasRes = await fetch(`${base(port)}/api/quotas`, authed(token));
+      expect(quotasRes.status).toBe(200);
+      const quotas = await quotasRes.json();
+      expect(quotas.find((q: { id: string }) => q.id === 'listed-quota')).toBeTruthy();
+    } finally {
+      await server.stop();
       fixture.cleanup();
     }
   });

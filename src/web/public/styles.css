@@ -1322,3 +1322,104 @@ body {
 .play-icon.err { color: #ef4444; }
 
 .toolkit-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Mission Control Quota and Budget Meter */
+.pill-badge.normal { background: #14532d; color: #f0fdf4; border: 1px solid #16a34a; }
+.pill-badge.conserve { background: #78350f; color: #fffbeb; border: 1px solid #d97706; }
+.pill-badge.batch { background: #7c2d12; color: #fff7ed; border: 1px solid #ea580c; }
+.pill-badge.paused { background: #7f1d1d; color: #fef2f2; border: 1px solid #dc2626; }
+
+.budget-meter-box {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.budget-meter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.meter-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+}
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+.meter-fill.normal { background: var(--accent-green); }
+.meter-fill.conserve { background: var(--accent-amber); }
+.meter-fill.batch { background: #f97316; }
+.meter-fill.paused { background: var(--accent-red); }
+
+.btn-action.danger {
+  background: #7f1d1d;
+  border-color: #dc2626;
+  color: #fef2f2;
+}
+.btn-action.danger:hover {
+  background: #991b1b;
+}
+.btn-action.warning {
+  background: #78350f;
+  border-color: #d97706;
+  color: #fffbeb;
+}
+.btn-action.warning:hover {
+  background: #92400e;
+}
+
+/* Task Board */
+.task-board-card {
+  margin-top: 16px;
+}
+.task-board-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.task-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-board-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.task-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.task-item-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-main);
+}
+.task-item-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+.task-item-details {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}

@@ -149,6 +149,23 @@ export class BrainContractError extends Error {
 }
 
 /**
+ * Thrown when a brain call's output matches a real provider rate limit,
+ * detected by the harness adapter. Distinct from BrainContractError: this is
+ * not malformed output, it is a live external throttle, so the caller must
+ * leave the affected task or question exactly as it was rather than
+ * escalating toward blocked or abandoned.
+ */
+export class BrainThrottledError extends Error {
+  constructor(
+    readonly label: string,
+    readonly backoffMs: number
+  ) {
+    super(`brain ${label} call was rate-limited by the provider; backing off ${backoffMs}ms`);
+    this.name = 'BrainThrottledError';
+  }
+}
+
+/**
  * Every requested task in a batch must receive exactly one verdict. Semantic
  * failures like this get the same single correction attempt as invalid JSON,
  * so a hallucinated task id cannot silently skip or duplicate a decision.
@@ -170,6 +187,7 @@ import crypto from 'node:crypto';
 import { getDb } from '../core/state.js';
 import { SessionManager } from '../sessions/manager.js';
 import type { HarnessKind } from '../core/types.js';
+import { getQuota, recordQuotaUsage } from './quota.js';
 
 export interface BrainInvocation {
   prompt: string;
@@ -193,9 +211,12 @@ export async function invokeBrain(
   argusId: string,
   opts: BrainInvocation
 ): Promise<string> {
-  const argus = getDb(projectRoot)
-    .prepare('SELECT brain_harness FROM argus WHERE id = ?')
-    .get(argusId) as { brain_harness?: string } | undefined;
+  const db = getDb(projectRoot);
+  const argus = db
+    .prepare('SELECT brain_harness, quota_id, budget_count_cache_reads FROM argus WHERE id = ?')
+    .get(argusId) as
+    | { brain_harness?: string; quota_id?: string | null; budget_count_cache_reads?: number }
+    | undefined;
   if (!argus) throw new Error(`argus "${argusId}" not found`);
 
   const manager = new SessionManager(projectRoot);
@@ -218,5 +239,24 @@ export async function invokeBrain(
     },
     env: opts.env,
   });
+
+  if (argus.quota_id) {
+    const telemetry = db
+      .prepare('SELECT input_tokens, output_tokens, cached_tokens FROM session_telemetry WHERE session_id = ?')
+      .get(session.id) as
+      | { input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null }
+      | undefined;
+    if (telemetry) {
+      // The attached quota owns its own countCacheReads setting, set via
+      // `deck quota create --no-count-cache-reads`; the mission's own
+      // budget_count_cache_reads only applies to a private, unquota'd budget.
+      const quota = getQuota(argus.quota_id);
+      const countCache = quota ? quota.countCacheReads : Number(argus.budget_count_cache_reads) === 1;
+      const tokens =
+        (telemetry.input_tokens ?? 0) + (telemetry.output_tokens ?? 0) + (countCache ? telemetry.cached_tokens ?? 0 : 0);
+      recordQuotaUsage(argus.quota_id, tokens);
+    }
+  }
+
   return stdout;
 }

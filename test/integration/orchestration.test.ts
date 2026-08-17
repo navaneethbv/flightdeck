@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,7 +14,8 @@ import { SessionManager } from '../../src/sessions/manager.js';
 import { ToolRegistry } from '../../src/mcp/tools.js';
 import { saveConfig, loadConfig } from '../../src/core/config.js';
 import { getDb, now } from '../../src/core/state.js';
-import { makeRepo, spawnCli, sleep } from '../helpers.js';
+import { makeRepo, spawnCli, runCli, sleep } from '../helpers.js';
+import { createQuota, recordQuotaUsage, setQuotaThrottle } from '../../src/argus/quota.js';
 
 /** A brain that returns canned JSON, so no model is ever invoked. */
 function fakeBrain(responses: Record<string, string>) {
@@ -110,6 +112,69 @@ describe('orchestration', () => {
       const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
       expect(() => manager.start({ conventionsNoteId: 'nope' })).toThrow(/conventions note "nope" not found/);
       expect(manager.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects a quota id that does not exist', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      expect(() => manager.start({ quotaId: 'nope' })).toThrow(/quota "nope" not found/);
+      expect(manager.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects --quota combined with --budget-window or --budget-max-tokens', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      expect(() => manager.start({ quotaId: 'q1', budgetWindowSec: 3600 })).toThrow(/cannot combine --quota/);
+      expect(() => manager.start({ quotaId: 'q1', budgetMaxTokens: 1000 })).toThrow(/cannot combine --quota/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('accepts a mission attached to an existing quota', () => {
+    const fixture = makeRepo();
+    try {
+      createQuota('shared-account', { maxTokens: 500_000, windowSec: 7200 });
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({ quotaId: 'shared-account' });
+      expect(argus.quotaId).toBe('shared-account');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('fires an on-event hook when a task is blocked', async () => {
+    const fixture = makeRepo();
+    const hookDir = path.join(fixture.root, '.flightdeck', 'hooks', 'on-event');
+    const eventFile = path.join(fixture.root, 'events.txt');
+    fs.mkdirSync(hookDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hookDir, '01-record.sh'),
+      `#!/bin/bash\necho "$FLIGHTDECK_EVENT" >> "${eventFile}"\n`,
+      { mode: 0o755 }
+    );
+    try {
+      const brain = fakeBrain({
+        plan: '{"tasks":[{"title":"a","spec":"do a","depends_on":[]}]}',
+      });
+      const manager = new ArgusManager(fixture.root, brain.fn);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ name: 'fleet', maxAttemptsPerTask: 1, missionNoteId: mission.id });
+      await manager.plan(argus.id);
+      const board = new TaskBoard(fixture.root);
+      const task = board.list(argus.id)[0];
+      board.toRevising(task.id, 'forced for test');
+      await manager.resumeRevisions(argus.id);
+      const events = fs.existsSync(eventFile) ? fs.readFileSync(eventFile, 'utf8').trim().split('\n') : [];
+      expect(events).toContain('task_blocked');
     } finally {
       fixture.cleanup();
     }
@@ -1076,6 +1141,248 @@ describe('orchestration', () => {
       saveConfig(previousConfig);
       fake.cleanup();
       fixture.cleanup();
+    }
+  });
+
+  it('actually stops the manager loop when stop is issued from a separate process', async () => {
+    const fixture = makeRepo();
+    const fake = makeWakingBrain(path.join(fixture.root, 'answer-log.txt'));
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'stopme', '--mission', mission.id, '--children', '2', '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'stopme') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'stopme')!.id;
+
+      // Issued from a brand new ArgusManager instance, standing in for a
+      // separate `deck argus stop` process, exactly like the CLI does.
+      await new ArgusManager(fixture.root).stop(argusId);
+
+      const code = await new Promise<number | null>((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 3000);
+        child.on('close', (c) => {
+          clearTimeout(timeout);
+          resolve(c);
+        });
+      });
+      expect(code, 'the runForever process should exit on its own once status is stopped').not.toBeNull();
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses and resumes a mission, and rejects an invalid transition', () => {
+    const fixture = makeRepo();
+    try {
+      const manager = new ArgusManager(fixture.root, fakeBrain({}).fn);
+      const argus = manager.start({});
+      // start() always creates the row with status 'stopped'; only
+      // runForever transitions it to 'running'. Simulate that directly so
+      // pause()/resume() can be tested without a spawned loop.
+      getDb(fixture.root).prepare("UPDATE argus SET status = 'running' WHERE id = ?").run(argus.id);
+
+      manager.pause(argus.id);
+      expect(manager.get(argus.id)?.status).toBe('paused');
+      expect(() => manager.pause(argus.id)).toThrow(/expected running/);
+
+      manager.resume(argus.id);
+      expect(manager.get(argus.id)?.status).toBe('running');
+      expect(() => manager.resume(argus.id)).toThrow(/expected paused/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('skips pulsing and processing pending events while paused, in a real spawned loop', async () => {
+    const fixture = makeRepo();
+    const answerLog = path.join(fixture.root, 'answer-log.txt');
+    const fake = makeWakingBrain(answerLog);
+    const notes = new NotesStore(fixture.root);
+    const mission = notes.createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'pauseme', '--mission', mission.id, '--children', '2', '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'pauseme') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'pauseme')!.id;
+      await waitFor(() => (new TaskBoard(fixture.root).list(argusId).length > 0 ? argusId : null));
+
+      manager.pause(argusId);
+      await sleep(500);
+
+      const worker = new SessionManager(fixture.root).createSession({
+        name: 'pauseme-worker',
+        harness: 'opencode',
+        cwd: fixture.root,
+        policy: 'child',
+        argusParent: argusId,
+      });
+      new QuestionQueue(fixture.root).ask(argusId, worker.id, 'What is the test command?');
+      await sleep(1000);
+      const answered = new QuestionQueue(fixture.root).pending(argusId);
+      expect(answered, 'a paused mission must not answer a question').toHaveLength(1);
+
+      manager.resume(argusId);
+      await waitFor(() => (new QuestionQueue(fixture.root).pending(argusId).length === 0 ? argusId : null));
+
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('skips planning without a brain call while throttled', async () => {
+    const fixture = makeRepo();
+    try {
+      const brain = fakeBrain({ plan: '{"tasks":[{"title":"a","spec":"do a","depends_on":[]}]}' });
+      const manager = new ArgusManager(fixture.root, brain.fn);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ missionNoteId: mission.id });
+      getDb(fixture.root)
+        .prepare('UPDATE argus SET throttled_until = ? WHERE id = ?')
+        .run(Date.now() + 60_000, argus.id);
+
+      await manager.plan(argus.id);
+
+      expect(brain.calls).toHaveLength(0);
+      expect(new TaskBoard(fixture.root).list(argus.id)).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('records a real provider throttle and stops calling the brain for the rest of the window', async () => {
+    const fixture = makeRepo();
+    try {
+      let calls = 0;
+      const brain = async (_root: string, _argusId: string, _opts: { label: string }): Promise<string> => {
+        calls += 1;
+        return 'Error: Claude AI usage limit reached. Please try again later. (429)';
+      };
+      const manager = new ArgusManager(fixture.root, brain);
+      const mission = new NotesStore(fixture.root).createNote('mission', '- build the thing');
+      const argus = manager.start({ missionNoteId: mission.id, brainHarness: 'claude' });
+
+      await manager.plan(argus.id);
+      expect(calls).toBe(1);
+      const throttledAt = manager.get(argus.id)?.throttledUntil;
+      expect(throttledAt).not.toBeNull();
+      expect(throttledAt as number).toBeGreaterThan(Date.now());
+
+      await manager.plan(argus.id);
+      expect(calls, 'a second plan() call must not invoke the brain again while throttled').toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('creates, lists, and shows a quota through the CLI', () => {
+    const fixture = makeRepo();
+    try {
+      const created = runCli(['quota', 'create', 'cli-quota', '--max-tokens', '500000', '--window', '2h', '--json'], {
+        cwd: fixture.root,
+      });
+      expect(created.code, created.stderr).toBe(0);
+      expect(JSON.parse(created.stdout)).toMatchObject({ id: 'cli-quota', maxTokens: 500000, windowSec: 7200 });
+
+      const listed = runCli(['quota', 'list', '--json'], { cwd: fixture.root });
+      expect(listed.code, listed.stderr).toBe(0);
+      expect(JSON.parse(listed.stdout).map((q: { id: string }) => q.id)).toContain('cli-quota');
+
+      const shown = runCli(['quota', 'show', 'cli-quota', '--json'], { cwd: fixture.root });
+      expect(shown.code, shown.stderr).toBe(0);
+      expect(JSON.parse(shown.stdout)).toMatchObject({ id: 'cli-quota' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects deck argus start --quota combined with --budget-window', () => {
+    const fixture = makeRepo();
+    try {
+      runCli(['quota', 'create', 'combo-quota', '--max-tokens', '1000', '--window', '1h'], { cwd: fixture.root });
+      const mission = new NotesStore(fixture.root).createNote('mission', '- do it');
+      const result = runCli(
+        ['argus', 'start', '--mission', mission.id, '--quota', 'combo-quota', '--budget-window', '1h', '--json'],
+        { cwd: fixture.root, env: { FLIGHTDECK_FORBID_REAL_HARNESS: '1' } }
+      );
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/cannot combine --quota/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('pauses and resumes a mission through the CLI', async () => {
+    const fixture = makeRepo();
+    const fake = makeWakingBrain(path.join(fixture.root, 'answer-log.txt'));
+    const mission = new NotesStore(fixture.root).createNote('mission', '- wake the brain');
+    try {
+      const child = spawnCli(
+        ['argus', 'start', '--name', 'cli-pause', '--mission', mission.id, '--pulse', '1h'],
+        { cwd: fixture.root, env: { PATH: `${fake.binDir}:${process.env.PATH ?? ''}` } }
+      );
+      const manager = new ArgusManager(fixture.root);
+      await waitFor(() => manager.list().find((a) => a.name === 'cli-pause') ?? null);
+      const argusId = manager.list().find((a) => a.name === 'cli-pause')!.id;
+
+      const paused = runCli(['argus', 'pause', argusId], { cwd: fixture.root });
+      expect(paused.code, paused.stderr).toBe(0);
+      await waitFor(() => (manager.get(argusId)?.status === 'paused' ? argusId : null));
+
+      const resumed = runCli(['argus', 'resume', argusId], { cwd: fixture.root });
+      expect(resumed.code, resumed.stderr).toBe(0);
+      await waitFor(() => (manager.get(argusId)?.status === 'running' ? argusId : null));
+
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    } finally {
+      fake.cleanup();
+      fixture.cleanup();
+    }
+  });
+
+  it('shares one quota across two missions in two different projects', async () => {
+    const projectA = makeRepo();
+    const projectB = makeRepo();
+    try {
+      const quotaId = `shared-${crypto.randomUUID().slice(0, 8)}`;
+      createQuota(quotaId, { maxTokens: 1000, windowSec: 3600 });
+
+      const managerA = new ArgusManager(projectA.root, fakeBrain({}).fn);
+      const managerB = new ArgusManager(projectB.root, fakeBrain({}).fn);
+      const argusA = managerA.start({ quotaId, name: 'mission-a' });
+      const argusB = managerB.start({ quotaId, name: 'mission-b' });
+
+      // Mission A's own brain session spends against the shared pool.
+      recordQuotaUsage(quotaId, 700);
+
+      // Mission B, in a completely different project's state.db, observes the
+      // combined spend on its very next read, with no cross-process signal
+      // beyond the shared quotas.db file.
+      const stateB = budgetState(projectB.root, argusB.id);
+      expect(stateB.spent).toBe(700);
+      expect(stateB.tier).toBe('conserve');
+
+      // A real throttle recorded by mission A immediately gates mission B's
+      // next brain call too.
+      const until = Date.now() + 60_000;
+      setQuotaThrottle(quotaId, until);
+      const stateA = budgetState(projectA.root, argusA.id);
+      expect(stateA.throttledUntil).toBe(until);
+      expect(budgetState(projectB.root, argusB.id).throttledUntil).toBe(until);
+    } finally {
+      projectA.cleanup();
+      projectB.cleanup();
     }
   });
 });

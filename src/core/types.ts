@@ -104,7 +104,7 @@ export interface Argus {
   childLimit: number;
   pulseSec: number;
   riskyTools: boolean;
-  status: 'running' | 'stopped';
+  status: 'running' | 'stopped' | 'paused';
   managerSessionId: string | null;
   createdAt: number;
   lastPulseAt: number | null;
@@ -119,6 +119,8 @@ export interface Argus {
   maxTasks: number;
   questionTimeoutSec: number;
   conventionsNoteId: string | null;
+  quotaId: string | null;
+  throttledUntil: number | null;
 }
 
 export type IntegrationKind = 'jira' | 'github' | 'slack';

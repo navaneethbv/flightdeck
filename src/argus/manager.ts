@@ -3,6 +3,7 @@ import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
 import type { Argus, BrainHarness, HarnessKind, Session, Task, WorkerHarness } from '../core/types.js';
 import { SessionManager } from '../sessions/manager.js';
+import { getAdapter } from '../sessions/harness.js';
 import { NotesStore } from '../notes/store.js';
 import { TablesStore } from '../tables/store.js';
 import { createWorktree } from '../worktrees/manager.js';
@@ -19,10 +20,13 @@ import {
   parseAnswer,
   validateReviewCoverage,
   BrainContractError,
+  BrainThrottledError,
   type BrainInvocation,
   type Verdict,
 } from './brain.js';
 import { loadReviewFiles } from './review-files.js';
+import { getQuota, setQuotaThrottle } from './quota.js';
+import { runOnEventHooks } from './hooks.js';
 
 export interface StartArgusOptions {
   name?: string;
@@ -41,6 +45,7 @@ export interface StartArgusOptions {
   maxTasks?: number;
   questionTimeoutSec?: number;
   conventionsNoteId?: string;
+  quotaId?: string;
 }
 
 function validateStartOptions(opts: StartArgusOptions): void {
@@ -51,6 +56,9 @@ function validateStartOptions(opts: StartArgusOptions): void {
     if (opts.workerHarnesses.length === 0) throw new Error('at least one worker harness is required');
     const invalid = opts.workerHarnesses.find((h) => h !== 'opencode' && h !== 'gemini');
     if (invalid) throw new Error(`worker harness must be opencode or gemini (got ${invalid})`);
+  }
+  if (opts.quotaId !== undefined && (opts.budgetWindowSec !== undefined || opts.budgetMaxTokens !== undefined)) {
+    throw new Error('cannot combine --quota with --budget-window or --budget-max-tokens; the quota owns those numbers');
   }
   for (const [name, value] of [
     ['budget window', opts.budgetWindowSec],
@@ -112,6 +120,8 @@ function rowToArgus(row: Record<string, unknown>): Argus {
     maxTasks: Number(row.max_tasks),
     questionTimeoutSec: Number(row.question_timeout_sec),
     conventionsNoteId: typeof row.conventions_note_id === 'string' ? row.conventions_note_id : null,
+    quotaId: typeof row.quota_id === 'string' ? row.quota_id : null,
+    throttledUntil: row.throttled_until === null || row.throttled_until === undefined ? null : Number(row.throttled_until),
   };
 }
 
@@ -177,6 +187,9 @@ export class ArgusManager {
     if (opts.conventionsNoteId && !this.notes.readNote(opts.conventionsNoteId)) {
       throw new Error(`conventions note "${opts.conventionsNoteId}" not found`);
     }
+    if (opts.quotaId && !getQuota(opts.quotaId)) {
+      throw new Error(`quota "${opts.quotaId}" not found`);
+    }
     this.ensureProgressTable();
     const id = crypto.randomUUID();
     const cap = randomToken();
@@ -212,6 +225,8 @@ export class ArgusManager {
       maxTasks: opts.maxTasks ?? 100,
       questionTimeoutSec: opts.questionTimeoutSec ?? 120,
       conventionsNoteId: opts.conventionsNoteId ?? null,
+      quotaId: opts.quotaId ?? null,
+      throttledUntil: null,
     };
     if (![2, 4, 8, 16].includes(argus.childLimit)) {
       throw new Error(`child limit must be one of 2, 4, 8, 16 (got ${argus.childLimit})`);
@@ -223,8 +238,8 @@ export class ArgusManager {
           status, manager_session_id, created_at, last_pulse_at,
           brain_harness, brain_plan_model, brain_review_model, worker_harnesses,
           budget_window_sec, budget_max_tokens, budget_count_cache_reads,
-          max_attempts_per_task, max_tasks, question_timeout_sec, conventions_note_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          max_attempts_per_task, max_tasks, question_timeout_sec, conventions_note_id, quota_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         argus.id,
@@ -249,15 +264,14 @@ export class ArgusManager {
         argus.maxAttemptsPerTask,
         argus.maxTasks,
         argus.questionTimeoutSec,
-        argus.conventionsNoteId
+        argus.conventionsNoteId,
+        argus.quotaId
       );
     this.writeProgress(argus.id, null, 'argus_created', `child_limit=${argus.childLimit} pulse=${argus.pulseSec}s`);
     return this.get(id)!;
   }
 
-  async runForever(id: string): Promise<void> {
-    const argus = this.get(id);
-    if (!argus) throw new Error(`argus "${id}" not found`);
+  private setupRunForever(id: string, argus: Argus): () => void {
     const mission = argus.missionNoteId ? this.notes.readNote(argus.missionNoteId) : null;
     if (!mission) {
       throw new Error(`argus "${id}" has no readable mission note`);
@@ -280,14 +294,12 @@ export class ArgusManager {
 
     this.stopping = false;
     let stopping = false;
-    const stop = (): void => {
-      if (stopping) return; // a second signal must not race the first shutdown
+    const shutdown = (): void => {
+      if (stopping) return;
       stopping = true;
       this.stopping = true;
       void (async () => {
         try {
-          // Stops every child session this fleet spawned. Without it, SIGTERM to
-          // the manager leaves autonomous agents running with no supervisor.
           await this.stop(id);
         } catch (err) {
           log.error(`argus ${id}: failed to stop children on shutdown: ${(err as Error).message}`);
@@ -301,12 +313,34 @@ export class ArgusManager {
         process.exit(0);
       })();
     };
-    process.on('SIGINT', stop);
-    process.on('SIGTERM', stop);
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return shutdown;
+  }
+
+  async runForever(id: string): Promise<void> {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    const shutdown = this.setupRunForever(id, argus);
 
     log.info(`argus ${id} running with pulse=${argus.pulseSec}s childLimit=${argus.childLimit}`);
     let nextPulseAt = 0;
+    let wasPaused = false;
     while (true) {
+      const row = this.db.prepare('SELECT status FROM argus WHERE id = ?').get(id) as { status?: string } | undefined;
+      if (row?.status === 'stopped') {
+        shutdown();
+        return;
+      }
+      if (row?.status === 'paused') {
+        wasPaused = true;
+        await sleep(250);
+        continue;
+      }
+      if (wasPaused) {
+        wasPaused = false;
+        nextPulseAt = 0;
+      }
       const current = Date.now();
       if (current >= nextPulseAt) {
         await this.pulse(id);
@@ -348,6 +382,27 @@ export class ArgusManager {
   }
 
   /**
+   * Detects a real provider throttle in one call's raw output and, if found,
+   * records it on the mission's quota (or its own row, if private) and throws
+   * BrainThrottledError so the caller leaves the affected task or question
+   * untouched instead of escalating it.
+   */
+  private checkThrottle(id: string, stdout: string, label: string): void {
+    const argus = this.get(id);
+    if (!argus) return;
+    const backoffMs = getAdapter(argus.brainHarness).detectRateLimit?.(stdout) ?? null;
+    if (backoffMs === null) return;
+    const until = now() + backoffMs;
+    if (argus.quotaId) {
+      setQuotaThrottle(argus.quotaId, until);
+    } else {
+      this.db.prepare('UPDATE argus SET throttled_until = ? WHERE id = ?').run(until, id);
+    }
+    this.writeProgress(id, null, 'brain_throttled', `${label} backoff=${backoffMs}ms`);
+    throw new BrainThrottledError(label, backoffMs);
+  }
+
+  /**
    * One brain call, with exactly one retry on malformed output.
    *
    * A retry loop against a rate-limited brain is worse than a visible
@@ -359,6 +414,7 @@ export class ArgusManager {
     parse: (stdout: string) => T
   ): Promise<T> {
     const stdout = await this.brain(this.projectRoot, id, opts);
+    this.checkThrottle(id, stdout, opts.label);
     try {
       return parse(stdout);
     } catch (err) {
@@ -371,6 +427,7 @@ export class ArgusManager {
         'Reply again with a single valid JSON object and no other text.',
       ].join('\n');
       const retried = await this.brain(this.projectRoot, id, { ...opts, prompt: retryPrompt });
+      this.checkThrottle(id, retried, opts.label);
       try {
         return parse(retried);
       } catch (error_) {
@@ -386,6 +443,12 @@ export class ArgusManager {
     if (!argus) throw new Error(`argus "${id}" not found`);
     const { mission, conventions } = this.contextFor(argus);
     if (!mission) throw new Error(`argus "${id}" has no readable mission note`);
+
+    const budgetBeforePlan = budgetState(this.projectRoot, id);
+    if (budgetBeforePlan.throttledUntil !== null && budgetBeforePlan.throttledUntil > now()) {
+      this.writeProgress(id, null, 'brain_throttled_skip', 'plan');
+      return;
+    }
 
     const existing = this.board.list(id);
     const row = this.db
@@ -417,6 +480,7 @@ export class ArgusManager {
         parsePlan
       );
     } catch (err) {
+      if (err instanceof BrainThrottledError) return;
       if (err instanceof BrainContractError) {
         this.db.prepare("UPDATE argus SET status = 'stopped' WHERE id = ?").run(id);
         if (argus.managerSessionId) {
@@ -559,10 +623,54 @@ export class ArgusManager {
     }
   }
 
+  private buildReviewBatchPrompt(batch: Task[], tier2Allowed: boolean): string {
+    const body = batch
+      .map((t) =>
+        [
+          `Task ${t.id}: ${t.title}`,
+          `Spec: ${t.spec}`,
+          `Worker summary: ${t.workerReport?.summary ?? '(none)'}`,
+          `Files changed: ${(t.workerReport?.filesChanged ?? []).join(', ') || '(none)'}`,
+          `Worker uncertainties: ${t.workerReport?.uncertainties ?? '(none)'}`,
+          `Diffstat:\n${t.diffstat ?? '(none)'}`,
+          `Gates: test=${t.gateResult?.testExitCode ?? 'skipped'} lint=${t.gateResult?.lintExitCode ?? 'skipped'}`,
+        ].join('\n')
+      )
+      .join('\n\n---\n\n');
+
+    return [
+      'Review the completed tasks below. Automated test and lint gates have already passed for all of them.',
+      'Judge whether the work satisfies its spec.',
+      '',
+      body,
+      '',
+      'Reply with JSON only:',
+      '{"verdicts":[{"task_id":"...","verdict":"accept|revise|need_files","reason":"...","paths":[]}]}',
+      tier2Allowed
+        ? 'Use "need_files" with specific paths only if you genuinely cannot decide from the summary.'
+        : 'The token budget is constrained. Do not use "need_files"; decide from the summary, or return "revise" with a concrete reason.',
+    ].join('\n');
+  }
+
+  private async applyReviewVerdicts(id: string, verdicts: Verdict[]): Promise<void> {
+    for (const verdict of verdicts) {
+      if (verdict.verdict === 'need_files') {
+        await this.tierTwoReview(id, verdict);
+        continue;
+      }
+      this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);
+      this.writeProgress(id, null, `review_${verdict.verdict}`, verdict.taskId);
+    }
+  }
+
   /** Drains the review queue in batches sized by the budget ladder. */
   async drainReviews(id: string, opts: { force?: boolean } = {}): Promise<void> {
     const force = opts.force === true;
     const budget = budgetState(this.projectRoot, id);
+    if (budget.throttledUntil !== null && budget.throttledUntil > now()) {
+      this.writeProgress(id, null, 'brain_throttled_skip', 'review');
+      return;
+    }
     const queued = this.board.list(id, 'in_review');
     if (queued.length === 0) return;
     if (!budget.policy.reviewsAllowed && !force) {
@@ -582,32 +690,7 @@ export class ArgusManager {
       .prepare('SELECT brain_review_model FROM argus WHERE id = ?')
       .get(id) as { brain_review_model?: string };
 
-    const body = batch
-      .map((t) =>
-        [
-          `Task ${t.id}: ${t.title}`,
-          `Spec: ${t.spec}`,
-          `Worker summary: ${t.workerReport?.summary ?? '(none)'}`,
-          `Files changed: ${(t.workerReport?.filesChanged ?? []).join(', ') || '(none)'}`,
-          `Worker uncertainties: ${t.workerReport?.uncertainties ?? '(none)'}`,
-          `Diffstat:\n${t.diffstat ?? '(none)'}`,
-          `Gates: test=${t.gateResult?.testExitCode ?? 'skipped'} lint=${t.gateResult?.lintExitCode ?? 'skipped'}`,
-        ].join('\n')
-      )
-      .join('\n\n---\n\n');
-
-    const prompt = [
-      'Review the completed tasks below. Automated test and lint gates have already passed for all of them.',
-      'Judge whether the work satisfies its spec.',
-      '',
-      body,
-      '',
-      'Reply with JSON only:',
-      '{"verdicts":[{"task_id":"...","verdict":"accept|revise|need_files","reason":"...","paths":[]}]}',
-      budget.policy.tier2Allowed
-        ? 'Use "need_files" with specific paths only if you genuinely cannot decide from the summary.'
-        : 'The token budget is constrained. Do not use "need_files"; decide from the summary, or return "revise" with a concrete reason.',
-    ].join('\n');
+    const prompt = this.buildReviewBatchPrompt(batch, budget.policy.tier2Allowed);
 
     let verdicts: Verdict[];
     try {
@@ -617,6 +700,7 @@ export class ArgusManager {
         (stdout) => validateReviewCoverage(batch, parseReview(stdout))
       );
     } catch (err) {
+      if (err instanceof BrainThrottledError) return;
       if (err instanceof BrainContractError) {
         for (const task of batch) {
           this.board.block(task.id, `brain review was malformed twice: ${err.causeMessage}`);
@@ -627,14 +711,7 @@ export class ArgusManager {
       throw err;
     }
 
-    for (const verdict of verdicts) {
-      if (verdict.verdict === 'need_files') {
-        await this.tierTwoReview(id, verdict);
-        continue;
-      }
-      this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);
-      this.writeProgress(id, null, `review_${verdict.verdict}`, verdict.taskId);
-    }
+    await this.applyReviewVerdicts(id, verdicts);
   }
 
   /**
@@ -646,6 +723,10 @@ export class ArgusManager {
   private async tierTwoReview(id: string, verdict: Verdict): Promise<void> {
     const paths = verdict.paths;
     const budgetAfterTier1 = budgetState(this.projectRoot, id);
+    if (budgetAfterTier1.throttledUntil !== null && budgetAfterTier1.throttledUntil > now()) {
+      this.writeProgress(id, null, 'brain_throttled_skip', 'review-files');
+      return;
+    }
     if (!budgetAfterTier1.policy.tier2Allowed) {
       const detail = `requested file review was unavailable under the current budget (tier ${budgetAfterTier1.tier})`;
       this.writeProgress(id, null, 'review_files_disabled', detail);
@@ -704,6 +785,7 @@ export class ArgusManager {
         (stdout) => validateReviewCoverage([task], parseReview(stdout))
       );
     } catch (err) {
+      if (err instanceof BrainThrottledError) return;
       if (err instanceof BrainContractError) {
         this.board.block(task.id, `tier 2 file review was malformed twice: ${err.causeMessage}`);
         this.writeProgress(id, task.assigneeSession, 'review_files_failed', task.id);
@@ -729,9 +811,50 @@ export class ArgusManager {
     this.writeProgress(id, task.assigneeSession, 'review_revise', task.id);
   }
 
+  private async answerSingleQuestion(
+    id: string,
+    question: ReturnType<QuestionQueue['pending']>[number],
+    mission: string,
+    conventions: string,
+    model: string | null
+  ): Promise<boolean> {
+    const prompt = [
+      'A coding agent in your fleet has a question. Answer it concisely and concretely.',
+      '',
+      mission ? `Mission context:\n${mission}\n` : '',
+      conventions ? `Project conventions:\n${conventions}\n` : '',
+      `Question: ${question.question}`,
+      '',
+      'Reply with JSON only:',
+      '{"answer":"...","faq_key":"short-kebab-case-topic"}',
+    ].join('\n');
+    try {
+      const parsed = await this.brainJson(
+        id,
+        { prompt, model, label: 'answer' },
+        parseAnswer
+      );
+      this.questions.answer(question.id, parsed.answer, parsed.faqKey);
+      this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
+      return true;
+    } catch (err) {
+      if (err instanceof BrainThrottledError) return false;
+      if (err instanceof BrainContractError) {
+        this.questions.markFailed(question.id, err.causeMessage);
+        this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);
+        return true;
+      }
+      throw err;
+    }
+  }
+
   /** Answers queued worker questions, one brain call each. */
   async answerQuestions(id: string): Promise<void> {
     const budget = budgetState(this.projectRoot, id);
+    if (budget.throttledUntil !== null && budget.throttledUntil > now()) {
+      this.writeProgress(id, null, 'brain_throttled_skip', 'answer');
+      return;
+    }
     if (!budget.questionsAllowed) return;
     const argus = this.get(id);
     const { mission, conventions } = argus ? this.contextFor(argus) : { mission: '', conventions: '' };
@@ -740,34 +863,14 @@ export class ArgusManager {
       .get(id) as { brain_review_model?: string };
 
     for (const question of this.questions.pending(id)) {
-      const prompt = [
-        'A coding agent in your fleet has a question. Answer it concisely and concretely.',
-        '',
-        mission ? `Mission context:\n${mission}\n` : '',
-        conventions ? `Project conventions:\n${conventions}\n` : '',
-        `Question: ${question.question}`,
-        '',
-        'Reply with JSON only:',
-        '{"answer":"...","faq_key":"short-kebab-case-topic"}',
-      ].join('\n');
-      try {
-        const parsed = await this.brainJson(
-          id,
-          { prompt, model: row.brain_review_model ?? null, label: 'answer' },
-          parseAnswer
-        );
-        this.questions.answer(question.id, parsed.answer, parsed.faqKey);
-        this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
-      } catch (err) {
-        if (err instanceof BrainContractError) {
-          this.questions.markFailed(question.id, err.causeMessage);
-          // The question stays unanswered so the waiting worker receives its
-          // normal timeout directive, and the manager keeps serving later work.
-          this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);
-          continue;
-        }
-        throw err;
-      }
+      const shouldContinue = await this.answerSingleQuestion(
+        id,
+        question,
+        mission,
+        conventions,
+        row.brain_review_model ?? null
+      );
+      if (!shouldContinue) break;
     }
   }
 
@@ -932,6 +1035,26 @@ export class ArgusManager {
     this.writeProgress(id, null, 'argus_stopped', `stopped ${children.length} children`);
   }
 
+  pause(id: string): void {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    if (argus.status !== 'running') {
+      throw new Error(`argus "${id}" is ${argus.status}, expected running`);
+    }
+    this.db.prepare("UPDATE argus SET status = 'paused' WHERE id = ?").run(id);
+    this.writeProgress(id, null, 'argus_paused', '');
+  }
+
+  resume(id: string): void {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    if (argus.status !== 'paused') {
+      throw new Error(`argus "${id}" is ${argus.status}, expected paused`);
+    }
+    this.db.prepare("UPDATE argus SET status = 'running' WHERE id = ?").run(id);
+    this.writeProgress(id, null, 'argus_resumed', '');
+  }
+
   fleet(id: string): { argus: Argus; children: ArgusChild[]; recentProgress: Record<string, unknown>[] } {
     const argus = this.get(id);
     if (!argus) throw new Error(`argus "${id}" not found`);
@@ -966,6 +1089,7 @@ export class ArgusManager {
     } catch (err) {
       log.error(`failed to write argus progress: ${(err as Error).message}`);
     }
+    runOnEventHooks(this.projectRoot, event, argusId, sessionId, detail);
   }
 }
 
