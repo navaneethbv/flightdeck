@@ -223,8 +223,8 @@ describe('FleetConsoleView', () => {
 
       const snap1 = loadSnapshot(fixture.root);
       expect(snap1.argusId).toBe(fleet1.id);
-      expect(snap1.tasks.length).toBe(2);
-      expect(snap1.progress.length).toBe(2);
+      expect(snap1.tasks).toHaveLength(2);
+      expect(snap1.progress).toHaveLength(2);
 
       // >1 fleets
       am.start({ name: 'fl-snap-2' });

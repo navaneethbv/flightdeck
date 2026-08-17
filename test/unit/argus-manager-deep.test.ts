@@ -42,7 +42,7 @@ describe('ArgusManager Deep Coverage Suite', () => {
     await am.plan(argus.id);
     const board = new TaskBoard(fixture.root);
     const tasks = board.list(argus.id);
-    expect(tasks.length).toBe(2);
+    expect(tasks).toHaveLength(2);
 
     // 2. Throttled skip
     getDb(fixture.root)

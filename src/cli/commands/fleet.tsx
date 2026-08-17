@@ -576,7 +576,7 @@ export function registerFleet(program: Command): void {
       .option('--json', 'output JSON')
       .action((...actionArgs: unknown[]) => {
         try {
-          const cmd = actionArgs[actionArgs.length - 1] as Command;
+          const cmd = actionArgs.at(-1) as Command;
           const opts = cmd.optsWithGlobals() as Record<string, string | boolean>;
           const taskId = String(actionArgs[0]);
           const reason = actionArgs.length > 2 && typeof actionArgs[1] === 'string' ? actionArgs[1] : undefined;

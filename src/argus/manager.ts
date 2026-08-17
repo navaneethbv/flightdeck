@@ -271,9 +271,7 @@ export class ArgusManager {
     return this.get(id)!;
   }
 
-  async runForever(id: string): Promise<void> {
-    const argus = this.get(id);
-    if (!argus) throw new Error(`argus "${id}" not found`);
+  private setupRunForever(id: string, argus: Argus): () => void {
     const mission = argus.missionNoteId ? this.notes.readNote(argus.missionNoteId) : null;
     if (!mission) {
       throw new Error(`argus "${id}" has no readable mission note`);
@@ -297,15 +295,11 @@ export class ArgusManager {
     this.stopping = false;
     let stopping = false;
     const shutdown = (): void => {
-      if (stopping) return; // a second signal, or a second detected 'stopped' status, must not race the first shutdown
+      if (stopping) return;
       stopping = true;
       this.stopping = true;
       void (async () => {
         try {
-          // Stops every child session this fleet spawned. Without it, SIGTERM to
-          // the manager leaves autonomous agents running with no supervisor.
-          // Idempotent when a separate process already stopped them: children
-          // already stopped tolerate a second stop.
           await this.stop(id);
         } catch (err) {
           log.error(`argus ${id}: failed to stop children on shutdown: ${(err as Error).message}`);
@@ -321,16 +315,18 @@ export class ArgusManager {
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
+    return shutdown;
+  }
+
+  async runForever(id: string): Promise<void> {
+    const argus = this.get(id);
+    if (!argus) throw new Error(`argus "${id}" not found`);
+    const shutdown = this.setupRunForever(id, argus);
 
     log.info(`argus ${id} running with pulse=${argus.pulseSec}s childLimit=${argus.childLimit}`);
     let nextPulseAt = 0;
     let wasPaused = false;
     while (true) {
-      // A fresh read every tick, not the row captured at the top of this
-      // function, because `stop` and `pause` are ordinary DB writes that may
-      // come from a completely different process: the CLI's `deck argus
-      // stop`/`pause`/`resume` commands each construct their own
-      // ArgusManager. This is the only way this loop learns about them.
       const row = this.db.prepare('SELECT status FROM argus WHERE id = ?').get(id) as { status?: string } | undefined;
       if (row?.status === 'stopped') {
         shutdown();
@@ -343,7 +339,7 @@ export class ArgusManager {
       }
       if (wasPaused) {
         wasPaused = false;
-        nextPulseAt = 0; // don't wait out the rest of a stale pre-pause interval
+        nextPulseAt = 0;
       }
       const current = Date.now();
       if (current >= nextPulseAt) {
@@ -627,6 +623,46 @@ export class ArgusManager {
     }
   }
 
+  private buildReviewBatchPrompt(batch: Task[], tier2Allowed: boolean): string {
+    const body = batch
+      .map((t) =>
+        [
+          `Task ${t.id}: ${t.title}`,
+          `Spec: ${t.spec}`,
+          `Worker summary: ${t.workerReport?.summary ?? '(none)'}`,
+          `Files changed: ${(t.workerReport?.filesChanged ?? []).join(', ') || '(none)'}`,
+          `Worker uncertainties: ${t.workerReport?.uncertainties ?? '(none)'}`,
+          `Diffstat:\n${t.diffstat ?? '(none)'}`,
+          `Gates: test=${t.gateResult?.testExitCode ?? 'skipped'} lint=${t.gateResult?.lintExitCode ?? 'skipped'}`,
+        ].join('\n')
+      )
+      .join('\n\n---\n\n');
+
+    return [
+      'Review the completed tasks below. Automated test and lint gates have already passed for all of them.',
+      'Judge whether the work satisfies its spec.',
+      '',
+      body,
+      '',
+      'Reply with JSON only:',
+      '{"verdicts":[{"task_id":"...","verdict":"accept|revise|need_files","reason":"...","paths":[]}]}',
+      tier2Allowed
+        ? 'Use "need_files" with specific paths only if you genuinely cannot decide from the summary.'
+        : 'The token budget is constrained. Do not use "need_files"; decide from the summary, or return "revise" with a concrete reason.',
+    ].join('\n');
+  }
+
+  private async applyReviewVerdicts(id: string, verdicts: Verdict[]): Promise<void> {
+    for (const verdict of verdicts) {
+      if (verdict.verdict === 'need_files') {
+        await this.tierTwoReview(id, verdict);
+        continue;
+      }
+      this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);
+      this.writeProgress(id, null, `review_${verdict.verdict}`, verdict.taskId);
+    }
+  }
+
   /** Drains the review queue in batches sized by the budget ladder. */
   async drainReviews(id: string, opts: { force?: boolean } = {}): Promise<void> {
     const force = opts.force === true;
@@ -654,32 +690,7 @@ export class ArgusManager {
       .prepare('SELECT brain_review_model FROM argus WHERE id = ?')
       .get(id) as { brain_review_model?: string };
 
-    const body = batch
-      .map((t) =>
-        [
-          `Task ${t.id}: ${t.title}`,
-          `Spec: ${t.spec}`,
-          `Worker summary: ${t.workerReport?.summary ?? '(none)'}`,
-          `Files changed: ${(t.workerReport?.filesChanged ?? []).join(', ') || '(none)'}`,
-          `Worker uncertainties: ${t.workerReport?.uncertainties ?? '(none)'}`,
-          `Diffstat:\n${t.diffstat ?? '(none)'}`,
-          `Gates: test=${t.gateResult?.testExitCode ?? 'skipped'} lint=${t.gateResult?.lintExitCode ?? 'skipped'}`,
-        ].join('\n')
-      )
-      .join('\n\n---\n\n');
-
-    const prompt = [
-      'Review the completed tasks below. Automated test and lint gates have already passed for all of them.',
-      'Judge whether the work satisfies its spec.',
-      '',
-      body,
-      '',
-      'Reply with JSON only:',
-      '{"verdicts":[{"task_id":"...","verdict":"accept|revise|need_files","reason":"...","paths":[]}]}',
-      budget.policy.tier2Allowed
-        ? 'Use "need_files" with specific paths only if you genuinely cannot decide from the summary.'
-        : 'The token budget is constrained. Do not use "need_files"; decide from the summary, or return "revise" with a concrete reason.',
-    ].join('\n');
+    const prompt = this.buildReviewBatchPrompt(batch, budget.policy.tier2Allowed);
 
     let verdicts: Verdict[];
     try {
@@ -700,14 +711,7 @@ export class ArgusManager {
       throw err;
     }
 
-    for (const verdict of verdicts) {
-      if (verdict.verdict === 'need_files') {
-        await this.tierTwoReview(id, verdict);
-        continue;
-      }
-      this.board.recordVerdict(verdict.taskId, verdict.verdict, verdict.reason);
-      this.writeProgress(id, null, `review_${verdict.verdict}`, verdict.taskId);
-    }
+    await this.applyReviewVerdicts(id, verdicts);
   }
 
   /**
@@ -807,6 +811,43 @@ export class ArgusManager {
     this.writeProgress(id, task.assigneeSession, 'review_revise', task.id);
   }
 
+  private async answerSingleQuestion(
+    id: string,
+    question: ReturnType<QuestionQueue['pending']>[number],
+    mission: string,
+    conventions: string,
+    model: string | null
+  ): Promise<boolean> {
+    const prompt = [
+      'A coding agent in your fleet has a question. Answer it concisely and concretely.',
+      '',
+      mission ? `Mission context:\n${mission}\n` : '',
+      conventions ? `Project conventions:\n${conventions}\n` : '',
+      `Question: ${question.question}`,
+      '',
+      'Reply with JSON only:',
+      '{"answer":"...","faq_key":"short-kebab-case-topic"}',
+    ].join('\n');
+    try {
+      const parsed = await this.brainJson(
+        id,
+        { prompt, model, label: 'answer' },
+        parseAnswer
+      );
+      this.questions.answer(question.id, parsed.answer, parsed.faqKey);
+      this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
+      return true;
+    } catch (err) {
+      if (err instanceof BrainThrottledError) return false;
+      if (err instanceof BrainContractError) {
+        this.questions.markFailed(question.id, err.causeMessage);
+        this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);
+        return true;
+      }
+      throw err;
+    }
+  }
+
   /** Answers queued worker questions, one brain call each. */
   async answerQuestions(id: string): Promise<void> {
     const budget = budgetState(this.projectRoot, id);
@@ -822,35 +863,14 @@ export class ArgusManager {
       .get(id) as { brain_review_model?: string };
 
     for (const question of this.questions.pending(id)) {
-      const prompt = [
-        'A coding agent in your fleet has a question. Answer it concisely and concretely.',
-        '',
-        mission ? `Mission context:\n${mission}\n` : '',
-        conventions ? `Project conventions:\n${conventions}\n` : '',
-        `Question: ${question.question}`,
-        '',
-        'Reply with JSON only:',
-        '{"answer":"...","faq_key":"short-kebab-case-topic"}',
-      ].join('\n');
-      try {
-        const parsed = await this.brainJson(
-          id,
-          { prompt, model: row.brain_review_model ?? null, label: 'answer' },
-          parseAnswer
-        );
-        this.questions.answer(question.id, parsed.answer, parsed.faqKey);
-        this.writeProgress(id, question.sessionId, 'question_answered', parsed.faqKey);
-      } catch (err) {
-        if (err instanceof BrainThrottledError) return;
-        if (err instanceof BrainContractError) {
-          this.questions.markFailed(question.id, err.causeMessage);
-          // The question stays unanswered so the waiting worker receives its
-          // normal timeout directive, and the manager keeps serving later work.
-          this.writeProgress(id, question.sessionId, 'question_failed', err.causeMessage);
-          continue;
-        }
-        throw err;
-      }
+      const shouldContinue = await this.answerSingleQuestion(
+        id,
+        question,
+        mission,
+        conventions,
+        row.brain_review_model ?? null
+      );
+      if (!shouldContinue) break;
     }
   }
 

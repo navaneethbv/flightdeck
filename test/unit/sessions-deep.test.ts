@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { exportSession, exportSessionToFile } from '../../src/sessions/export.js';
@@ -38,7 +38,7 @@ describe('Sessions Deep Coverage Suite', () => {
 
     const bundle = exportSession(fixture.root, s.id);
     expect(bundle.session.id).toBe(s.id);
-    expect(bundle.messages.length).toBe(1);
+    expect(bundle.messages).toHaveLength(1);
 
     const exported = exportSessionToFile(fixture.root, s.id);
     expect(fs.existsSync(exported.path)).toBe(true);
@@ -67,6 +67,7 @@ describe('Sessions Deep Coverage Suite', () => {
 
     // stop follower
     follower.stop();
+    expect(follower).toBeDefined();
   });
 
   it('tests cliEntryPath environment override and fallback', () => {
@@ -77,8 +78,14 @@ describe('Sessions Deep Coverage Suite', () => {
   });
 
   it('tests logger functions', () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    log.setEnabled(true);
+    log.debug('test debug');
     log.info('test info');
     log.warn('test warn');
     log.error('test error');
+    expect(stderrSpy).toHaveBeenCalled();
+    log.setEnabled(false);
+    stderrSpy.mockRestore();
   });
 });

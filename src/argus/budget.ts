@@ -90,6 +90,58 @@ export function reviewBatchSize(
   return 0;
 }
 
+interface UsageSource {
+  ceiling: number;
+  windowSec: number;
+  spent: number;
+  throttledUntil: number | null;
+  nextResetAt: number | null;
+}
+
+function resolveQuotaUsage(quotaId: string): UsageSource {
+  const quota = getQuota(quotaId);
+  if (!quota) throw new Error(`quota "${quotaId}" not found`);
+  const spent = quotaSpent(quotaId, quota.windowSec);
+  const oldest = quotaOldestUsage(quotaId, quota.windowSec);
+  const nextResetAt = oldest === null ? null : oldest + quota.windowSec * 1000;
+  return {
+    ceiling: quota.maxTokens,
+    windowSec: quota.windowSec,
+    spent,
+    throttledUntil: quota.throttledUntil,
+    nextResetAt,
+  };
+}
+
+function resolveMissionUsage(db: ReturnType<typeof getDb>, argusId: string, argus: Record<string, unknown>): UsageSource {
+  const ceiling = Number(argus.budget_max_tokens);
+  const windowSec = Number(argus.budget_window_sec);
+  const countCache = Number(argus.budget_count_cache_reads) === 1;
+  const windowStart = now() - windowSec * 1000;
+  const cacheTerm = countCache ? ' + COALESCE(t.cached_tokens, 0)' : '';
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.output_tokens, 0)${cacheTerm}), 0) AS spent
+       FROM session_telemetry t
+       JOIN sessions s ON s.id = t.session_id
+       WHERE s.policy = 'brain' AND s.argus_parent = ? AND s.started_at > ?`
+    )
+    .get(...([argusId, windowStart] as SQLInputValue[])) as { spent: number };
+  const oldest = db
+    .prepare('SELECT MIN(started_at) AS started FROM sessions WHERE policy = ? AND argus_parent = ? AND started_at > ?')
+    .get(...(['brain', argusId, windowStart] as SQLInputValue[])) as { started: number | null };
+  const nextResetAt = oldest.started === null ? null : oldest.started + windowSec * 1000;
+  const throttledUntil =
+    argus.throttled_until === null || argus.throttled_until === undefined ? null : Number(argus.throttled_until);
+  return {
+    ceiling,
+    windowSec,
+    spent: Number(row.spent),
+    throttledUntil,
+    nextResetAt,
+  };
+}
+
 export function budgetState(projectRoot: string, argusId: string): BudgetState {
   const root = normalizeProjectRoot(projectRoot);
   const db = getDb(root);
@@ -101,44 +153,8 @@ export function budgetState(projectRoot: string, argusId: string): BudgetState {
   if (!argus) throw new Error(`argus "${argusId}" not found`);
 
   const quotaId = typeof argus.quota_id === 'string' ? argus.quota_id : null;
-
-  let ceiling: number;
-  let windowSec: number;
-  let spent: number;
-  let throttledUntil: number | null;
-  let nextResetAt: number | null;
-
-  if (quotaId) {
-    const quota = getQuota(quotaId);
-    if (!quota) throw new Error(`quota "${quotaId}" not found`);
-    ceiling = quota.maxTokens;
-    windowSec = quota.windowSec;
-    spent = quotaSpent(quotaId, windowSec);
-    throttledUntil = quota.throttledUntil;
-    const oldest = quotaOldestUsage(quotaId, windowSec);
-    nextResetAt = oldest === null ? null : oldest + windowSec * 1000;
-  } else {
-    ceiling = Number(argus.budget_max_tokens);
-    windowSec = Number(argus.budget_window_sec);
-    const countCache = Number(argus.budget_count_cache_reads) === 1;
-    const windowStart = now() - windowSec * 1000;
-    const cacheTerm = countCache ? ' + COALESCE(t.cached_tokens, 0)' : '';
-    const row = db
-      .prepare(
-        `SELECT COALESCE(SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.output_tokens, 0)${cacheTerm}), 0) AS spent
-         FROM session_telemetry t
-         JOIN sessions s ON s.id = t.session_id
-         WHERE s.policy = 'brain' AND s.argus_parent = ? AND s.started_at > ?`
-      )
-      .get(...([argusId, windowStart] as SQLInputValue[])) as { spent: number };
-    spent = Number(row.spent);
-    const oldest = db
-      .prepare('SELECT MIN(started_at) AS started FROM sessions WHERE policy = ? AND argus_parent = ? AND started_at > ?')
-      .get(...(['brain', argusId, windowStart] as SQLInputValue[])) as { started: number | null };
-    nextResetAt = oldest.started === null ? null : oldest.started + windowSec * 1000;
-    throttledUntil =
-      argus.throttled_until === null || argus.throttled_until === undefined ? null : Number(argus.throttled_until);
-  }
+  const usage = quotaId ? resolveQuotaUsage(quotaId) : resolveMissionUsage(db, argusId, argus);
+  const { ceiling, windowSec, spent, throttledUntil, nextResetAt } = usage;
 
   const windowStart = now() - windowSec * 1000;
   const queued = db

@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventEmitter } from 'node:events';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { makeRepo, makeFakeHarness } from '../helpers.js';
 
@@ -45,16 +44,11 @@ describe('SessionManager Deep Coverage Suite', () => {
     const sm = new SessionManager(fixture.root);
     const s = sm.createSession({ name: 'sess-kill', harness: 'opencode', cwd: fixture.root });
 
-    // Mock a running child process that does not exit on SIGTERM
-    const fakeChild: any = new EventEmitter();
-    fakeChild.pid = 999999;
-    fakeChild.kill = vi.fn();
+    await sm.startSession(s.id, { headless: true, prompt: 'sleep' });
+    expect(sm.get(s.id)?.status).toBe('running');
 
-    // set in running map
-    (SessionManager as any)['running']?.set(s.id, fakeChild);
-
-    // stop with 50ms timeout to trigger SIGKILL path
     await sm.stopSession(s.id, 50);
+    expect(sm.get(s.id)?.status).toBe('stopped');
   });
 
   it('tests getLogs fallback when log file does not exist', () => {

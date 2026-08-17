@@ -47,7 +47,7 @@ describe('Telemetry Deep Coverage Suite', () => {
     });
 
     const list = store.list();
-    expect(list.length).toBe(2);
+    expect(list).toHaveLength(2);
     expect(store.get(s1.id)?.model).toBe('claude-3-5-sonnet');
     expect(store.get('unknown-id')).toBeNull();
   });
