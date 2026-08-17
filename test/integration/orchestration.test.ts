@@ -1263,7 +1263,7 @@ describe('orchestration', () => {
     const fixture = makeRepo();
     try {
       let calls = 0;
-      const brain = async (_root: string, _argusId: string, opts: { label: string }): Promise<string> => {
+      const brain = async (_root: string, _argusId: string, _opts: { label: string }): Promise<string> => {
         calls += 1;
         return 'Error: Claude AI usage limit reached. Please try again later. (429)';
       };
