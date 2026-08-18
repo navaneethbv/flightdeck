@@ -50,7 +50,9 @@ describe('brain sessions', () => {
     const harness = makeFakeHarness('claude');
     fs.writeFileSync(
       path.join(harness.binDir, 'claude'),
-      '#!/bin/bash\necho "fake claude ran with: $@"\nexit 0\n',
+      '#!/bin/bash\n' +
+        'node -e \'console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"fake claude ran with: " + process.argv.slice(1).join(" ")}]}}))\' -- "$@"\n' +
+        'exit 0\n',
       { mode: 0o755 }
     );
     const oldPath = process.env.PATH;
