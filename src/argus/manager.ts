@@ -459,6 +459,7 @@ export class ArgusManager {
     const prompt = [
       'You are the orchestrator of a fleet of coding agents.',
       'Break the mission below into independent tasks that separate agents can work on in isolated git worktrees.',
+      'You only reason and answer in JSON here; do not read, write, or run commands against any file or project on this machine.',
       '',
       'Mission:',
       mission,
@@ -608,6 +609,8 @@ export class ArgusManager {
         'Feedback:',
         task.verdictReason ?? 'Revision requested.',
         task.gateResult?.failureTail ? `\nGate output:\n${task.gateResult.failureTail}` : '',
+        '',
+        `Stay inside ${session.cwd}. Never read, write, or run commands against any path outside it, including other projects on this machine you may notice in absolute paths. If an MCP tool you expect does not appear to be available, say so in your final message and stop rather than searching the filesystem for it.`,
         '',
         'Fix the issue, rerun the relevant checks, then call `report_done` again.',
       ].join('\n');
@@ -992,6 +995,8 @@ export class ArgusManager {
       task.spec,
       '',
       'Rules:',
+      `- Stay inside ${info.path}. Never read, write, or run commands against any path outside it, including other projects on this machine you may notice in absolute paths (for example in tool configuration). That is true even if it looks related or you think you are helping.`,
+      "- If an MCP tool you expect (for example `ask_manager` or `report_done`) does not appear to be available, do not go looking for it on the filesystem. Say so plainly in your final message and stop; do not treat it as something to investigate or fix yourself.",
       '- If you are unsure about a project convention, call the `ask_manager` tool. Answers are cached, so asking is cheap.',
       '- When finished, call the `report_done` tool with an honest summary.',
       '- Automated test and lint gates run immediately after you report. If they fail, the task comes back to you with the output.',

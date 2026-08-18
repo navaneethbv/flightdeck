@@ -232,6 +232,7 @@ export async function invokeBrain(
   await manager.startSession(session.id, {
     headless: true,
     prompt: opts.prompt,
+    autonomy: true,
     waitForExit: true,
     model: opts.model ?? undefined,
     onStdout: (chunk) => {

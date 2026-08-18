@@ -118,8 +118,6 @@ describe('Harness adapters', () => {
     expect(getAdapter('codex').sessionArgs('implement task', { autonomy: true })).toEqual([
       'exec',
       '--json',
-      '--sandbox',
-      'workspace-write',
       '--approve-for-me',
       '--',
       'implement task',

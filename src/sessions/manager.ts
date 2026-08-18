@@ -6,8 +6,9 @@ import path from 'node:path';
 import { getDb, now, randomToken } from '../core/state.js';
 import { normalizeProjectRoot } from '../core/paths.js';
 import type { HarnessKind, Session, SessionPolicy } from '../core/types.js';
-import { adapters } from './harness.js';
+import { adapters, type HarnessAdapter } from './harness.js';
 import { TelemetryCollector } from './telemetry.js';
+import { wrapForWriteSandbox } from './sandbox.js';
 import { log } from '../core/logger.js';
 
 export interface CreateSessionOptions {
@@ -28,7 +29,13 @@ export interface StartOptions {
   env?: NodeJS.ProcessEnv;
   /** Overrides the harness default model. Used for brain model tiering. */
   model?: string;
-  /** Receives raw stdout chunks. Brain invocations use this to read JSON. */
+  /**
+   * Receives each chunk of stdout after it has been rendered through the
+   * harness adapter's `renderLine` (the same extraction used for session
+   * logs), not raw process output. Brain invocations use this to read JSON:
+   * the raw stream for `codex`/`claude` is structured JSONL, and the actual
+   * answer is nested inside one event's text field, not the stream itself.
+   */
   onStdout?: (chunk: string) => void;
 }
 
@@ -60,6 +67,47 @@ function assertHarnessSpawnAllowed(binary: string): void {
         'create a fixture stub with makeFakeHarness and prepend its directory to PATH'
     );
   }
+}
+
+/**
+ * Paths a headless child/brain spawn legitimately needs to write to: its own
+ * cwd, scratch space, and the harness's own credential/session state
+ * directory (derived from `authFiles`, already the source of truth for
+ * where each harness keeps that). Opencode additionally needs its
+ * conventional XDG config/cache dirs, which `profileEnv` does not override
+ * (only `XDG_DATA_HOME` is set there).
+ *
+ * A worktree's own directory only holds a `.git` gitlink *file*; the actual
+ * index and HEAD live in the parent project's `.git/worktrees/<name>/`, and
+ * `git add`/`git commit` also write into the parent's shared
+ * `.git/objects/` and `.git/refs/` (every worktree of one repo shares one
+ * object database). `git add`/`git commit` inside the worktree fail
+ * without write access to the whole parent `.git/`. That is still safe to
+ * allow: it confines the write to the one project this session was
+ * assigned to, not any other project on the machine.
+ */
+function computeWritableRoots(
+  adapter: HarnessAdapter,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  session: Session,
+  projectRoot: string
+): string[] {
+  const roots = [cwd, os.tmpdir()];
+  try {
+    const authFile = adapter.authFiles(env)[0];
+    if (authFile) roots.push(path.dirname(authFile));
+  } catch {
+    // best effort; the sandbox still confines writes to cwd and tmp
+  }
+  if (adapter.kind === 'opencode') {
+    const home = env.HOME ?? os.homedir();
+    roots.push(path.join(home, '.config', 'opencode'), path.join(home, '.cache', 'opencode'));
+  }
+  if (session.worktree) {
+    roots.push(path.join(projectRoot, '.git'));
+  }
+  return roots;
 }
 
 export function rowToSession(row: Record<string, unknown>): Session {
@@ -178,7 +226,21 @@ export class SessionManager {
 
     log.info(`starting session ${session.id} harness=${session.harness} headless=${opts.headless ?? false} cwd=${cwd}`);
 
-    const child = spawn(adapter.binary, args, {
+    // Children and brain calls run autonomously with no human watching
+    // their output; confine their harness's own native file tools to a
+    // deliberate allowlist so a confused or misdirected agent cannot write
+    // outside the worktree it was assigned. Manager and default sessions
+    // are excluded: a human is expected to be present for those.
+    const sandboxed =
+      opts.headless && (session.policy === 'child' || session.policy === 'brain')
+        ? wrapForWriteSandbox(
+            adapter.binary,
+            args,
+            computeWritableRoots(adapter, cwd, env, session, this.projectRoot)
+          )
+        : { binary: adapter.binary, args };
+
+    const child = spawn(sandboxed.binary, sandboxed.args, {
       cwd,
       env,
       stdio: opts.headless ? ['ignore', 'pipe', 'pipe'] : 'inherit',
@@ -205,10 +267,12 @@ export class SessionManager {
         });
         child.stdout?.on('data', (d) => {
           const raw = d.toString();
-          opts.onStdout?.(raw);
           try {
             const text = collector.feed(raw, 'stdout');
-            if (text) logStream?.write(text);
+            if (text) {
+              logStream?.write(text);
+              opts.onStdout?.(text);
+            }
           } catch {
             // ignore
           }
@@ -225,7 +289,10 @@ export class SessionManager {
         child.on('close', () => {
           try {
             const text = collector.flush();
-            if (text) logStream?.write(text);
+            if (text) {
+              logStream?.write(text);
+              opts.onStdout?.(text);
+            }
           } catch {
             // ignore
           }

@@ -34,7 +34,9 @@ function fakeBrain(planJson: string) {
 function makeFleetHarness(): { binDir: string; cleanup(): void } {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
   const claude =
-    "#!/bin/bash\necho '{\"tasks\":[{\"title\":\"task one\",\"spec\":\"do task one\",\"depends_on\":[]},{\"title\":\"task two\",\"spec\":\"do task two\",\"depends_on\":[]}]}'\nexit 0\n";
+    '#!/bin/bash\n' +
+    'node -e \'console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:JSON.stringify({tasks:[{title:"task one",spec:"do task one",depends_on:[]},{title:"task two",spec:"do task two",depends_on:[]}]})}]}}))\'\n' +
+    'exit 0\n';
   fs.writeFileSync(path.join(binDir, 'claude'), claude, { mode: 0o755 });
   fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\nwhile true; do sleep 1; done\n', { mode: 0o755 });
   return { binDir, cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }) };

@@ -57,18 +57,19 @@ function makeWakingBrain(answerLog: string): { binDir: string; cleanup(): void }
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
   const claude = [
     '#!/bin/bash',
+    'emit() { node -e \'console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:process.argv[1]}]}}))\' "$1"; }',
     'ARGS="$*"',
     'if echo "$ARGS" | grep -q "Review the completed tasks below"; then',
     '  TASK_ID=$(echo "$ARGS" | grep -oE "Task [0-9a-f-]+:" | head -1 | sed "s/Task //;s/://")',
-    `  echo "{\\"verdicts\\":[{\\"task_id\\":\\"$TASK_ID\\",\\"verdict\\":\\"accept\\"}]}"`,
+    `  emit "{\\"verdicts\\":[{\\"task_id\\":\\"$TASK_ID\\",\\"verdict\\":\\"accept\\"}]}"`,
     '  exit 0',
     'fi',
     'if echo "$ARGS" | grep -q "has a question"; then',
     `  echo "answer" >> "${answerLog}"`,
-    '  echo \'{"answer":"Run npm test","faq_key":"test-command"}\'',
+    '  emit \'{"answer":"Run npm test","faq_key":"test-command"}\'',
     '  exit 0',
     'fi',
-    'echo \'{"tasks":[{"title":"wake task","spec":"do the wake task","depends_on":[]}]}\'',
+    'emit \'{"tasks":[{"title":"wake task","spec":"do the wake task","depends_on":[]}]}\'',
     'exit 0',
   ].join('\n');
   fs.writeFileSync(path.join(binDir, 'claude'), claude, { mode: 0o755 });

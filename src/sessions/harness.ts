@@ -210,14 +210,20 @@ const codex: HarnessAdapter = {
   interactiveArgs: () => [],
   headlessArgs: (prompt, opts) => {
     const args = ['exec', '--json'];
-    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
+    // `--approve-for-me` already routes approvals through the workspace-write
+    // sandbox on its own; codex's own CLI rejects an explicit `--sandbox`
+    // alongside it ("cannot be used with '--approve-for-me'").
+    if (opts.autonomy) args.push('--approve-for-me');
     if (opts.model) args.push('--model', opts.model);
     args.push('--', prompt);
     return args;
   },
   sessionArgs: (prompt, opts) => {
     const args = ['exec', '--json'];
-    if (opts.autonomy) args.push('--sandbox', 'workspace-write', '--approve-for-me');
+    // `--approve-for-me` already routes approvals through the workspace-write
+    // sandbox on its own; codex's own CLI rejects an explicit `--sandbox`
+    // alongside it ("cannot be used with '--approve-for-me'").
+    if (opts.autonomy) args.push('--approve-for-me');
     if (opts.model) args.push('--model', opts.model);
     args.push('--', prompt);
     return args;

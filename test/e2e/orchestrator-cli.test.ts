@@ -99,7 +99,9 @@ describe('orchestrator CLI', () => {
     const fixture = makeRepo();
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-bin-'));
     const codex =
-      "#!/bin/bash\necho '{\"tasks\":[{\"title\":\"task one\",\"spec\":\"do task one\",\"depends_on\":[]}]}'\nexit 0\n";
+      '#!/bin/bash\n' +
+      'node -e \'console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:JSON.stringify({tasks:[{title:"task one",spec:"do task one",depends_on:[]}]})}}))\'\n' +
+      'exit 0\n';
     fs.writeFileSync(path.join(binDir, 'codex'), codex, { mode: 0o755 });
     fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/bash\necho "fake opencode ran with: $@"\nexit 0\n', { mode: 0o755 });
     try {
