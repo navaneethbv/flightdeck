@@ -23,3 +23,11 @@ test/fixtures/**/state.db*
 # Playwright MCP scratch output
 .playwright-mcp/
 coverage/
+
+# Generated knowledge graph: ~3MB of rebuildable artifacts (graph.json, graph.html,
+# GRAPH_REPORT.md, extraction cache). Regenerate with `graphify update .`.
+graphify-out/
+
+# Claude Code hook registration written by `graphify claude install`.
+# Contains an absolute path to the local graphify binary, so it is machine-specific.
+.claude/settings.json
