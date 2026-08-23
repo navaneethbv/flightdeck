@@ -11,6 +11,12 @@ The design contract is [docs/superpowers/specs/2026-08-14-flightdeck-design.md](
 Read it before changing behavior.
 It is revision 2, and its `What changed in revision 2` section records where the code drifted from revision 1 and what is being corrected.
 
+## Dependency freshness
+
+Run `npx npm-check-updates` before starting a new task to check for newer dependency versions.
+Apply updates that are safe for this codebase, and skip a major bump if it breaks the toolchain (lint, typecheck, build, or tests) rather than forcing it through.
+`typescript-eslint` currently does not support TypeScript 7, so `typescript` is intentionally held at `^6.0.3` until that support lands.
+
 ## Commands
 
 ```bash
