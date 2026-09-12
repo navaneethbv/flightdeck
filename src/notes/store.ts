@@ -66,6 +66,14 @@ function serializeFile(title: string, body: string): string {
   return `---\n${YAML.stringify({ title }).trim()}\n---\n${body}`;
 }
 
+function cleanupNoteFiles(files: string[]): void {
+  // Cleanup must not turn a committed write into a reported failure or
+  // obscure the original error.
+  for (const file of files) {
+    try { fs.rmSync(file, { force: true }); } catch { /* best-effort temporary cleanup */ }
+  }
+}
+
 function writeNoteFile(filePath: string, title: string, body: string, commit: () => void): void {
   const temporary = path.join(path.dirname(filePath), `.note-${crypto.randomUUID()}.tmp`);
   const backup = `${temporary}.previous`;
@@ -82,22 +90,19 @@ function writeNoteFile(filePath: string, title: string, body: string, commit: ()
     replaced = true;
     commit();
   } catch (error) {
-    if (replaced) {
-      try {
-        if (hasBackup) fs.renameSync(backup, filePath);
-        else fs.rmSync(filePath);
-      } catch (restoreError) {
-        preserveBackup = hasBackup;
-        throw new AggregateError([error, restoreError], `Note save failed and its file could not be restored${hasBackup ? `; previous content remains at ${backup}` : ''}`);
-      }
+    if (!replaced) throw error;
+    try {
+      if (hasBackup) fs.renameSync(backup, filePath);
+      else fs.rmSync(filePath);
+    } catch (restoreError) {
+      preserveBackup = hasBackup;
+      const recovery = hasBackup ? `; previous content remains at ${backup}` : '';
+      throw new AggregateError([error, restoreError], `Note save failed and its file could not be restored${recovery}`);
     }
     throw error;
   } finally {
-    // Cleanup must not turn a committed write into a reported failure or
-    // obscure the original error. A failed restore keeps its recovery copy.
-    for (const file of preserveBackup ? [temporary] : [temporary, backup]) {
-      try { fs.rmSync(file, { force: true }); } catch { /* best-effort temporary cleanup */ }
-    }
+    // A failed restore keeps its recovery copy.
+    cleanupNoteFiles(preserveBackup ? [temporary] : [temporary, backup]);
   }
 }
 

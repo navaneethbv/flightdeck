@@ -1,3 +1,21 @@
+function workspaceNode(tag, className, content) {
+  const result = document.createElement(tag);
+  if (className) result.className = className;
+  if (content !== undefined) result.textContent = String(content);
+  return result;
+}
+
+
+function sameWorkspaceNote(left, right) {
+  return left && right && left.version === right.version && left.title === right.title && left.body === right.body;
+}
+
+function workspaceCell(value, type) {
+  if (value === null || value === undefined) return '-';
+  if (type === 'boolean') return String(Boolean(value));
+  return String(value);
+}
+
 /* Project workspace. Resource content is always rendered as text. */
 globalThis.createWorkspace = function createWorkspace({ root, missionRoot, request, refresh, onLogs, onPlaybook }) {
   const labels = { notes: 'Notes', tables: 'Tables', worktrees: 'Worktrees', sessions: 'Sessions', playbooks: 'Playbooks', argus: 'Argus fleets' };
@@ -16,50 +34,39 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
   let generation = 0;
   let offset = 0;
 
-  function node(tag, className, content) {
-    const result = document.createElement(tag);
-    if (className) result.className = className;
-    if (content !== undefined) result.textContent = String(content);
-    return result;
-  }
-
   function button(label, action, primary = false) {
-    const result = node('button', `btn-action${primary ? ' primary' : ''}`, label);
+    const result = workspaceNode('button', `btn-action${primary ? ' primary' : ''}`, label);
     result.type = 'button';
     result.addEventListener('click', action);
     return result;
   }
 
-  const heading = node('h1', 'workspace-title');
-  const subtitle = node('p', 'workspace-subtitle');
-  const headingText = node('div');
+  const heading = workspaceNode('h1', 'workspace-title');
+  const subtitle = workspaceNode('p', 'workspace-subtitle');
+  const headingText = workspaceNode('div');
   headingText.append(heading, subtitle);
   const newNote = button('New note', () => openNewNote(), true);
-  const header = node('header', 'workspace-header');
+  const header = workspaceNode('header', 'workspace-header');
   header.append(headingText, newNote);
-  const search = node('input', 'custom-input');
+  const search = workspaceNode('input', 'custom-input');
   search.type = 'search';
   search.id = 'resource-search';
   search.setAttribute('aria-label', 'Search workspace resources');
   search.placeholder = 'Search resources...';
   search.addEventListener('input', renderList);
-  const list = node('div', 'workspace-resource-list');
+  const list = workspaceNode('div', 'workspace-resource-list');
   list.setAttribute('aria-label', 'Workspace resources');
-  const sidebar = node('div', 'workspace-browser');
+  const sidebar = workspaceNode('div', 'workspace-browser');
   sidebar.append(search, list);
-  const detail = node('section', 'workspace-detail');
+  const detail = workspaceNode('section', 'workspace-detail');
   detail.setAttribute('aria-label', 'Resource details');
-  const layout = node('div', 'workspace-layout');
+  const layout = workspaceNode('div', 'workspace-layout');
   layout.append(sidebar, detail);
   root.append(header, layout);
 
   function dirty() {
     if (!draft) return false;
     return draft.title !== (draft.original?.title ?? '') || draft.body !== (draft.original?.body ?? '');
-  }
-
-  function sameNote(left, right) {
-    return left && right && left.version === right.version && left.title === right.title && left.body === right.body;
   }
 
   function canLeave() {
@@ -102,7 +109,7 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
     const query = search.value.trim().toLowerCase();
     const items = resources().filter((item) => [item.title, item.caption, item.search].some((value) => String(value || '').toLowerCase().includes(query)));
     if (!items.length) {
-      list.append(node('p', 'workspace-empty', query ? 'No matching resources.' : `No ${section} yet.`));
+      list.append(workspaceNode('p', 'workspace-empty', query ? 'No matching resources.' : `No ${section} yet.`));
       return;
     }
     for (const item of items) {
@@ -110,18 +117,18 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
       entry.className = 'workspace-resource';
       entry.dataset.resource = item.id;
       entry.setAttribute('aria-pressed', String(selected === item.id));
-      entry.append(node('strong', '', item.title || '(untitled)'), node('span', '', item.caption));
+      entry.append(workspaceNode('strong', '', item.title || '(untitled)'), workspaceNode('span', '', item.caption));
       list.append(entry);
       if (item.id === focused) entry.focus({ preventScroll: true });
     }
   }
 
   function emptyDetail() {
-    detail.replaceChildren(node('p', 'workspace-empty', section === 'notes' ? 'Select a note or create one to get started.' : 'Select a resource to inspect it.'));
+    detail.replaceChildren(workspaceNode('p', 'workspace-empty', section === 'notes' ? 'Select a note or create one to get started.' : 'Select a resource to inspect it.'));
   }
 
   function message(text, error = false) {
-    const result = node('p', error ? 'workspace-error' : 'workspace-empty', text);
+    const result = workspaceNode('p', error ? 'workspace-error' : 'workspace-empty', text);
     result.setAttribute('role', error ? 'alert' : 'status');
     return result;
   }
@@ -138,7 +145,7 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
     offset = 0;
     renderList();
     if (section === 'playbooks') {
-      detail.replaceChildren(node('h2', '', id), node('p', 'workspace-subtitle', 'This workflow runs in the served project. Operations that need approval will prompt before execution.'));
+      detail.replaceChildren(workspaceNode('h2', '', id), workspaceNode('p', 'workspace-subtitle', 'This workflow runs in the served project. Operations that need approval will prompt before execution.'));
       const run = button('Run workflow', () => onPlaybook(run, id), true);
       detail.append(run);
       return;
@@ -185,21 +192,21 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
   }
 
   function renderEditor() {
-    const titleLabel = node('label', 'workspace-field', 'Title');
+    const titleLabel = workspaceNode('label', 'workspace-field', 'Title');
     titleLabel.htmlFor = 'workspace-note-title';
-    const title = node('input', 'custom-input');
+    const title = workspaceNode('input', 'custom-input');
     title.id = 'workspace-note-title';
     title.value = draft.title;
     title.required = true;
-    const bodyLabel = node('label', 'workspace-field', 'Body (Markdown)');
+    const bodyLabel = workspaceNode('label', 'workspace-field', 'Body (Markdown)');
     bodyLabel.htmlFor = 'workspace-note-body';
-    const body = node('textarea', 'custom-textarea workspace-note-body');
+    const body = workspaceNode('textarea', 'custom-textarea workspace-note-body');
     body.id = 'workspace-note-body';
     body.value = draft.body;
     body.spellcheck = false;
     title.addEventListener('input', () => { draft.title = title.value; setNoteStatus(); });
     body.addEventListener('input', () => { draft.body = body.value; setNoteStatus(); });
-    const status = node('span', 'workspace-note-status');
+    const status = workspaceNode('span', 'workspace-note-status');
     status.id = 'workspace-note-status';
     status.setAttribute('role', 'status');
     const save = button('Save note', saveNote, true);
@@ -209,9 +216,9 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
       if (draft.original) { draft = null; loadDetail(); }
       else { draft = null; emptyDetail(); }
     });
-    const toolbar = node('div', 'workspace-editor-actions');
+    const toolbar = workspaceNode('div', 'workspace-editor-actions');
     toolbar.append(save, discard, status);
-    const error = node('p', 'workspace-error');
+    const error = workspaceNode('p', 'workspace-error');
     error.id = 'workspace-note-error';
     error.setAttribute('role', 'alert');
     error.hidden = true;
@@ -248,36 +255,36 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
   }
 
   function detailHeader(title, description) {
-    const toolbar = node('div', 'workspace-detail-header');
-    toolbar.append(node('h2', '', title), button('Refresh', loadDetail));
-    detail.replaceChildren(toolbar, node('p', 'workspace-subtitle', description));
+    const toolbar = workspaceNode('div', 'workspace-detail-header');
+    toolbar.append(workspaceNode('h2', '', title), button('Refresh', loadDetail));
+    detail.replaceChildren(toolbar, workspaceNode('p', 'workspace-subtitle', description));
   }
 
   function renderTable({ table, rows, hasMore, offset: pageOffset }) {
     detailHeader(table.name, 'Read-only data. Rows are ordered by row ID.');
     const columns = [{ name: 'rowid', type: 'ID' }, ...table.columns];
-    const grid = node('table', 'workspace-table');
-    const caption = node('caption', 'workspace-sr-only', `${table.name} rows`);
-    const head = node('thead');
-    const headers = node('tr');
+    const grid = workspaceNode('table', 'workspace-table');
+    const caption = workspaceNode('caption', 'workspace-sr-only', `${table.name} rows`);
+    const head = workspaceNode('thead');
+    const headers = workspaceNode('tr');
     for (const column of columns) {
-      const cell = node('th');
+      const cell = workspaceNode('th');
       cell.scope = 'col';
-      cell.append(node('span', '', column.name), node('small', '', column.type));
+      cell.append(workspaceNode('span', '', column.name), workspaceNode('small', '', column.type));
       headers.append(cell);
     }
     head.append(headers);
-    const body = node('tbody');
+    const body = workspaceNode('tbody');
     for (const row of rows) {
-      const tr = node('tr');
+      const tr = workspaceNode('tr');
       for (const column of columns) {
         const value = row[column.name];
-        tr.append(node('td', '', value === null || value === undefined ? '-' : column.type === 'boolean' ? String(Boolean(value)) : String(value)));
+        tr.append(workspaceNode('td', '', workspaceCell(value, column.type)));
       }
       body.append(tr);
     }
     grid.append(caption, head, body);
-    const scroll = node('div', 'workspace-table-scroll');
+    const scroll = workspaceNode('div', 'workspace-table-scroll');
     scroll.tabIndex = 0;
     scroll.setAttribute('aria-label', 'Scrollable table');
     scroll.append(grid);
@@ -287,28 +294,28 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
     previous.disabled = pageOffset === 0;
     const next = button('Next', () => { offset = pageOffset + 50; return loadDetail(); });
     next.disabled = !hasMore;
-    const pager = node('div', 'workspace-pagination');
-    pager.append(previous, node('span', '', rows.length ? `Rows ${pageOffset + 1}-${pageOffset + rows.length}` : '0 rows'), next);
+    const pager = workspaceNode('div', 'workspace-pagination');
+    pager.append(previous, workspaceNode('span', '', rows.length ? `Rows ${pageOffset + 1}-${pageOffset + rows.length}` : '0 rows'), next);
     detail.append(pager);
   }
 
   function fileList(title, files) {
-    const section = node('section', 'workspace-files');
-    section.append(node('h3', '', `${title} (${files.length})`));
-    const list = node('ul');
-    for (const file of files) list.append(node('li', '', file));
-    if (!files.length) list.append(node('li', 'text-dim', 'None'));
+    const section = workspaceNode('section', 'workspace-files');
+    section.append(workspaceNode('h3', '', `${title} (${files.length})`));
+    const list = workspaceNode('ul');
+    for (const file of files) list.append(workspaceNode('li', '', file));
+    if (!files.length) list.append(workspaceNode('li', 'text-dim', 'None'));
     section.append(list);
     return section;
   }
 
   function renderWorktree({ status, diff }) {
     detailHeader(status.name, status.path);
-    const meta = node('div', 'workspace-worktree-meta');
-    meta.append(node('code', '', status.branch), node('span', status.clean ? 'workspace-clean' : 'workspace-dirty', status.clean ? 'Clean' : 'Uncommitted changes'));
+    const meta = workspaceNode('div', 'workspace-worktree-meta');
+    meta.append(workspaceNode('code', '', status.branch), workspaceNode('span', status.clean ? 'workspace-clean' : 'workspace-dirty', status.clean ? 'Clean' : 'Uncommitted changes'));
     detail.append(meta, fileList('Modified files', status.modified), fileList('Untracked files', status.untracked));
-    detail.append(node('h3', '', `Diff (${diff.filesChanged} files)`), node('p', 'workspace-subtitle', diff.comparison || 'Tracked changes; untracked files are listed separately.'));
-    const content = node('pre', 'workspace-diff', diff.diff || 'No tracked changes.');
+    detail.append(workspaceNode('h3', '', `Diff (${diff.filesChanged} files)`), workspaceNode('p', 'workspace-subtitle', diff.comparison || 'Tracked changes; untracked files are listed separately.'));
+    const content = workspaceNode('pre', 'workspace-diff', diff.diff || 'No tracked changes.');
     content.tabIndex = 0;
     content.setAttribute('aria-label', 'Worktree diff');
     detail.append(content);
@@ -320,7 +327,7 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
     renderList();
     if (section !== 'notes' || !draft?.original || saving) return;
     const latest = (state.notes || []).find((note) => note.id === draft.original.id);
-    if (sameNote(latest, draft.original) || (latest && latest.version < draft.original.version)) return;
+    if (sameWorkspaceNote(latest, draft.original) || (latest && latest.version < draft.original.version)) return;
     if (!dirty() && latest) {
       draft = { title: latest.title, body: latest.body, original: latest };
       renderEditor();
@@ -336,7 +343,6 @@ globalThis.createWorkspace = function createWorkspace({ root, missionRoot, reque
   window.addEventListener('beforeunload', (event) => {
     if (dirty() || saving) {
       event.preventDefault();
-      event.returnValue = '';
     }
   });
 

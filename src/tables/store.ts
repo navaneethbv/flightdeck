@@ -41,6 +41,23 @@ function tableSqlName(name: string): string {
   return `t_${name}`;
 }
 
+function paginationClause(limit?: number, offset?: number): { sql: string; params: number[] } {
+  let sql = '';
+  const params: number[] = [];
+  if (limit !== undefined) {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive integer');
+    sql += ' LIMIT ?';
+    params.push(limit);
+  }
+  if (offset !== undefined) {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
+    if (limit === undefined) sql += ' LIMIT -1';
+    sql += ' OFFSET ?';
+    params.push(offset);
+  }
+  return { sql, params };
+}
+
 function coerce(value: unknown, type: ColumnType): unknown {
   if (value === null || value === undefined) return null;
   switch (type) {
@@ -169,17 +186,9 @@ export class TablesStore {
     else {
       sql += ' ORDER BY rowid ASC';
     }
-    if (opts.limit !== undefined) {
-      if (!Number.isSafeInteger(opts.limit) || opts.limit < 1) throw new Error('limit must be a positive integer');
-      sql += ' LIMIT ?';
-      params.push(opts.limit);
-    }
-    if (opts.offset !== undefined) {
-      if (!Number.isSafeInteger(opts.offset) || opts.offset < 0) throw new Error('offset must be a non-negative integer');
-      if (opts.limit === undefined) sql += ' LIMIT -1';
-      sql += ' OFFSET ?';
-      params.push(opts.offset);
-    }
+    const page = paginationClause(opts.limit, opts.offset);
+    sql += page.sql;
+    params.push(...page.params);
     return this.db.prepare(sql).all(...(params as SQLInputValue[])) as Record<string, unknown>[];
   }
 

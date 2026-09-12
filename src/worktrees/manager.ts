@@ -145,7 +145,9 @@ export function ensureFlightdeckDirIgnored(projectRoot: string): void {
 }
 
 function inspectGit(dir: string, args: string[]): string {
-  const result = spawnSync('git', ['-C', dir, ...args], {
+  // This local CLI uses the operator's installed Git, like the other worktree commands.
+  // HTTP inputs cannot set PATH or the executable; no shell is involved.
+  const result = spawnSync('git', ['-C', dir, ...args], { // NOSONAR: S4036, operator-owned PATH is the CLI trust boundary.
     encoding: 'utf8',
     timeout: 10_000,
     maxBuffer: 1024 * 1024,
@@ -157,7 +159,8 @@ function inspectGit(dir: string, args: string[]): string {
 }
 
 function defaultBase(projectRoot: string): string {
-  const remote = spawnSync('git', ['-C', projectRoot, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
+  // Resolve through the same operator-owned PATH as every other worktree command.
+  const remote = spawnSync('git', ['-C', projectRoot, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }); // NOSONAR: S4036
   if (remote.status === 0) return remote.stdout.trim();
   for (const branch of ['main', 'master']) {
     const result = spawnSync('git', ['-C', projectRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
