@@ -81,8 +81,11 @@ function writeNoteFile(filePath: string, title: string, body: string, commit: ()
   let hasBackup = false;
   let preserveBackup = false;
   try {
-    fs.writeFileSync(temporary, serializeFile(title, body), { flag: 'wx' });
-    if (fs.existsSync(filePath)) {
+    const existingMode = fs.existsSync(filePath) ? fs.statSync(filePath).mode & 0o777 : undefined;
+    fs.writeFileSync(temporary, serializeFile(title, body), { flag: 'wx', mode: existingMode });
+    if (existingMode !== undefined) {
+      // Creation applies umask, so restore the original bits exactly before replacement.
+      fs.chmodSync(temporary, existingMode);
       fs.copyFileSync(filePath, backup, fs.constants.COPYFILE_EXCL);
       hasBackup = true;
     }

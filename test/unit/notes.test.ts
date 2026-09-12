@@ -30,6 +30,22 @@ describe('NotesStore', () => {
     }
   });
 
+  it.each([0o600, 0o640])('preserves existing note permissions (%i) when replacing its file', (mode) => {
+    const fixture = makeRepo();
+    try {
+      const store = new NotesStore(fixture.root);
+      const created = store.createNote('Private', 'private content');
+      const file = path.join(fixture.root, '.flightdeck', 'notes', `${created.id}.md`);
+      fs.chmodSync(file, mode);
+      const saved = store.updateNote(created.id, { body: 'updated private content' }, created);
+      expect(fs.statSync(file).mode & 0o777).toBe(mode);
+      expect(store.readNote(created.id)).toEqual(saved);
+      expect(saved.body).toBe('updated private content');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('rolls back note metadata, history and search when saving the file fails', () => {
     const fixture = makeRepo();
     try {
@@ -82,6 +98,7 @@ describe('NotesStore', () => {
       const file = path.join(fixture.root, '.flightdeck', 'notes', `${created.id}.md`);
       const originalFile = '---\ntitle: "Original"\ncustom: preserve-this-field\n---\noriginal canary';
       fs.writeFileSync(file, originalFile);
+      fs.chmodSync(file, 0o600);
       const db = getDb(fixture.root);
       db.exec(`
         CREATE TABLE commit_guard (note_id TEXT REFERENCES notes(id) DEFERRABLE INITIALLY DEFERRED);
@@ -90,6 +107,7 @@ describe('NotesStore', () => {
       `);
       expect(() => store.updateNote(created.id, { title: 'Replacement', body: 'replacement' }, created)).toThrow('FOREIGN KEY constraint failed');
       expect(fs.readFileSync(file, 'utf8')).toBe(originalFile);
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
       expect(store.readNote(created.id)).toEqual(created);
       expect(store.versions(created.id)).toHaveLength(1);
       expect(store.searchNotes('canary')).toHaveLength(1);
