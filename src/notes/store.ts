@@ -15,6 +15,15 @@ export interface Note {
   updatedAt: number;
 }
 
+export type NoteSnapshot = Pick<Note, 'version' | 'title' | 'body'>;
+
+export class NoteConflictError extends Error {
+  constructor() {
+    super('This note changed since it was opened. Reload the latest note before saving.');
+    this.name = 'NoteConflictError';
+  }
+}
+
 export interface NoteSearchResult {
   id: string;
   title: string;
@@ -57,6 +66,41 @@ function serializeFile(title: string, body: string): string {
   return `---\n${YAML.stringify({ title }).trim()}\n---\n${body}`;
 }
 
+function writeNoteFile(filePath: string, title: string, body: string, commit: () => void): void {
+  const temporary = path.join(path.dirname(filePath), `.note-${crypto.randomUUID()}.tmp`);
+  const backup = `${temporary}.previous`;
+  let replaced = false;
+  let hasBackup = false;
+  let preserveBackup = false;
+  try {
+    fs.writeFileSync(temporary, serializeFile(title, body), { flag: 'wx' });
+    if (fs.existsSync(filePath)) {
+      fs.copyFileSync(filePath, backup, fs.constants.COPYFILE_EXCL);
+      hasBackup = true;
+    }
+    fs.renameSync(temporary, filePath);
+    replaced = true;
+    commit();
+  } catch (error) {
+    if (replaced) {
+      try {
+        if (hasBackup) fs.renameSync(backup, filePath);
+        else fs.rmSync(filePath);
+      } catch (restoreError) {
+        preserveBackup = hasBackup;
+        throw new AggregateError([error, restoreError], `Note save failed and its file could not be restored${hasBackup ? `; previous content remains at ${backup}` : ''}`);
+      }
+    }
+    throw error;
+  } finally {
+    // Cleanup must not turn a committed write into a reported failure or
+    // obscure the original error. A failed restore keeps its recovery copy.
+    for (const file of preserveBackup ? [temporary] : [temporary, backup]) {
+      try { fs.rmSync(file, { force: true }); } catch { /* best-effort temporary cleanup */ }
+    }
+  }
+}
+
 function syncFts(db: unknown, noteId: string, title: string, body: string): void {
   const d = db as import('node:sqlite').DatabaseSync;
   try {
@@ -86,15 +130,21 @@ export class NotesStore {
       id = `${slug}-${crypto.randomBytes(3).toString('hex')}`;
     }
     const ts = now();
-    this.db
-      .prepare('INSERT INTO notes (id, title, slug, current_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, title, slug, 1, ts, ts);
-    this.db
-      .prepare('INSERT INTO notes_versions (note_id, version, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, 1, title, body, ts);
-    syncFts(this.db, id, title, body);
-    fs.writeFileSync(noteFilePath(this.projectRoot, id), serializeFile(title, body));
-    return { id, title, body, version: 1, createdAt: ts, updatedAt: ts };
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare('INSERT INTO notes (id, title, slug, current_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, title, slug, 1, ts, ts);
+      this.db
+        .prepare('INSERT INTO notes_versions (note_id, version, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, 1, title, body, ts);
+      syncFts(this.db, id, title, body);
+      writeNoteFile(noteFilePath(this.projectRoot, id), title, body, () => this.db.exec('COMMIT'));
+      return { id, title, body, version: 1, createdAt: ts, updatedAt: ts };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   readNote(id: string): Note | null {
@@ -125,25 +175,36 @@ export class NotesStore {
     return this.listNotes();
   }
 
-  updateNote(id: string, changes: { title?: string; body?: string }): Note {
-    const current = this.readNote(id);
-    if (!current) throw new Error(`note "${id}" not found`);
-    const title = changes.title ?? current.title;
-    const body = changes.body ?? current.body;
-    const nextVersion = current.version + 1;
-    const ts = now();
-    this.db
-      .prepare('INSERT INTO notes_versions (note_id, version, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, nextVersion, title, body, ts);
-    this.db.prepare('UPDATE notes SET title = ?, current_version = ?, updated_at = ? WHERE id = ?').run(
-      title,
-      nextVersion,
-      ts,
-      id
-    );
-    syncFts(this.db, id, title, body);
-    fs.writeFileSync(noteFilePath(this.projectRoot, id), serializeFile(title, body));
-    return { ...current, title, body, version: nextVersion, updatedAt: ts };
+  updateNote(id: string, changes: { title?: string; body?: string }, expected?: NoteSnapshot): Note {
+    // Lock before reading both metadata and the editable file so other store
+    // writers cannot pass the same snapshot comparison concurrently.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.readNote(id);
+      if (!current) throw new Error(`note "${id}" not found`);
+      if (expected && (current.version !== expected.version || current.title !== expected.title || current.body !== expected.body)) {
+        throw new NoteConflictError();
+      }
+      const title = changes.title ?? current.title;
+      const body = changes.body ?? current.body;
+      const nextVersion = current.version + 1;
+      const ts = now();
+      this.db
+        .prepare('INSERT INTO notes_versions (note_id, version, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, nextVersion, title, body, ts);
+      this.db.prepare('UPDATE notes SET title = ?, current_version = ?, updated_at = ? WHERE id = ?').run(
+        title,
+        nextVersion,
+        ts,
+        id
+      );
+      syncFts(this.db, id, title, body);
+      writeNoteFile(noteFilePath(this.projectRoot, id), title, body, () => this.db.exec('COMMIT'));
+      return { ...current, title, body, version: nextVersion, updatedAt: ts };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   versions(id: string): { version: number; title: string; createdAt: number }[] {
