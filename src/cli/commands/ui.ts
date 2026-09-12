@@ -1,9 +1,17 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { exec } from 'node:child_process';
 import { projectRootOf, handleError } from '../util.js';
 import { createWebServer } from '../../server/index.js';
 
-type Opts = Record<string, string | boolean | undefined>;
+type Opts = { port: number; open: boolean; project?: string };
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isInteger(port) || port > 65535) {
+    throw new InvalidArgumentError('port must be an integer between 0 and 65535');
+  }
+  return port;
+}
 
 function getOpenCommand(): string {
   if (process.platform === 'darwin') return 'open';
@@ -16,16 +24,15 @@ export function registerUi(program: Command): void {
     .command('ui')
     .alias('web')
     .description('Launch the Flightdeck Web GUI Dashboard in the browser')
-    .option('--port <number>', 'port to listen on', '4173')
+    .option('--port <number>', 'port to listen on (0 selects an available port)', parsePort, 4173)
     .option('--no-open', 'do not open browser automatically')
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (opts: Opts) => {
       try {
-        const projectRoot = projectRootOf(opts.project as string | undefined);
-        const port = Number.parseInt(String(opts.port ?? '4173'), 10) || 4173;
+        const projectRoot = projectRootOf(opts.project);
 
         const webServer = createWebServer({
-          port,
+          port: opts.port,
           projectRoot,
         });
 

@@ -3,7 +3,7 @@
 > **Terminal & Web Control-Plane for AI Coding Agents** — Run, isolate, supervise, and orchestrate fleets of coding-agent harnesses (Google Gemini, Claude Code, OpenAI Codex, OpenCode) across Git worktrees with MCP tools, structured project memory, and autonomous Argus orchestration.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.16.0-green.svg)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-Protocol%20v1.12-purple.svg)](https://modelcontextprotocol.io/)
 
 ---
@@ -53,7 +53,7 @@
 ## 📦 Installation & Requirements
 
 ### Requirements
-- **Node.js**: `v22.5.0` or higher (state uses the built-in `node:sqlite`, not a native module)
+- **Node.js**: `v22.16.0` or higher (state uses built-in `node:sqlite` with FTS5 full-text search support)
 - **Git**: `2.30+` installed on system `PATH`
 - **Agent Harnesses** *(optional, at least one recommended)*:
   - Google Gemini CLI (`gemini`)

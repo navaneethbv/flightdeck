@@ -42,7 +42,8 @@ Run `npm run build` first when invoking vitest directly.
 Web assets are copied, not bundled ([scripts/copy-assets.js](scripts/copy-assets.js)).
 Editing `src/web/public/` requires a rebuild before `deck ui` serves the change from `dist/`.
 
-Node 22.5+ is required, because state uses the built-in `node:sqlite` rather than a native module.
+Node 22.16+ is required for built-in `node:sqlite` with FTS5 full-text search support.
+Older Node 22 releases can start the CLI but fail when opening project state.
 
 ## Architecture
 

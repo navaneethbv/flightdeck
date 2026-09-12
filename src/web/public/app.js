@@ -365,6 +365,9 @@ function renderProjectTree() {
     { key: 'playbooks', icon: '⚡', label: 'Playbooks', count: state.playbooks.length },
     { key: 'argus', icon: '👁', label: 'Argus fleets', count: state.argus.length },
   ];
+  const query = (el('project-search')?.value || '').trim().toLowerCase();
+  const projectMatches = (state.projectName || '').toLowerCase().includes(query);
+  const visibleSections = sections.filter((section) => projectMatches || section.label.toLowerCase().includes(query));
 
   tree.innerHTML = `
     <div class="tree-group active-group">
@@ -374,7 +377,7 @@ function renderProjectTree() {
         <span class="item-name font-bold">${escapeHtml(state.projectName || NO_VALUE)}</span>
       </div>
       <div class="tree-children">
-        ${sections
+        ${visibleSections
           .map(
             (s) => `
           <div class="tree-item indent-1" data-section="${s.key}">
@@ -384,6 +387,7 @@ function renderProjectTree() {
           </div>`
           )
           .join('')}
+        ${visibleSections.length === 0 ? '<p class="empty-state">No matching sections.</p>' : ''}
       </div>
     </div>
   `;
@@ -654,18 +658,28 @@ function renderFleet() {
   if (!container) return;
 
   const sessions = state.sessions ?? [];
+  const query = (el('session-filter')?.value || '').trim().toLowerCase();
+  const visibleSessions = sessions.filter((session) =>
+    [session.name, session.harness, session.status, session.worktree, session.telemetry?.model]
+      .some((value) => String(value ?? '').toLowerCase().includes(query))
+  );
   const hung = new Set((state.watchdog?.hungSessions ?? []).map((s) => s.id ?? s));
 
   const count = el('fleet-child-count');
-  if (count) count.textContent = String(sessions.length);
+  if (count) count.textContent = query ? `${visibleSessions.length} / ${sessions.length}` : String(sessions.length);
 
   if (sessions.length === 0) {
     container.innerHTML = `<p class="empty-state">No sessions. Start one with <code>deck session start</code>.</p>`;
     return;
   }
 
+  if (visibleSessions.length === 0) {
+    container.innerHTML = '<p class="empty-state">No sessions match your filter.</p>';
+    return;
+  }
+
   container.innerHTML = '';
-  for (const s of sessions) {
+  for (const s of visibleSessions) {
     container.appendChild(createSessionCard(s, hung));
   }
 }
@@ -959,12 +973,9 @@ function setupEventHandlers() {
     }
   });
 
-  el('project-search')?.addEventListener('input', (e) => {
-    const q = e.target.value.toLowerCase().trim();
-    for (const item of document.querySelectorAll('.tree-item')) {
-      item.style.display = !q || item.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
-    }
-  });
+  el('project-search')?.addEventListener('input', renderProjectTree);
+  el('session-filter')?.addEventListener('input', renderFleet);
+  el('btn-search-sessions')?.addEventListener('click', () => el('session-filter')?.focus());
 
   el('btn-pause-resume')?.addEventListener('click', async () => {
     const fleet = selectedFleet();
