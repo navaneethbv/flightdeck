@@ -24,8 +24,7 @@ jobs:
           node-version: '22.16.0'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npx vitest run test/e2e/dashboard.test.ts test/unit/cli-entry.test.ts
+      - run: npm test -- test/e2e/dashboard.test.ts test/unit/cli-entry.test.ts
 
   lint:
     name: lint

@@ -1,4 +1,4 @@
-import { Command, InvalidArgumentError } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import { exec } from 'node:child_process';
 import { projectRootOf, handleError } from '../util.js';
 import { createWebServer } from '../../server/index.js';
@@ -24,7 +24,9 @@ export function registerUi(program: Command): void {
     .command('ui')
     .alias('web')
     .description('Launch the Flightdeck Web GUI Dashboard in the browser')
-    .option('--port <number>', 'port to listen on (0 selects an available port)', parsePort, 4173)
+    .addOption(new Option('--port <number>', 'port to listen on (0 selects an available port)')
+      .argParser(parsePort)
+      .default(4173))
     .option('--no-open', 'do not open browser automatically')
     .option('--project <path>', 'project root (default: current directory)')
     .action(async (opts: Opts) => {
