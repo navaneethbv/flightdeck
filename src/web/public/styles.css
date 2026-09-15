@@ -190,14 +190,9 @@ body {
   font-size: 12px;
   color: var(--text-muted);
   border-radius: 4px;
-  cursor: pointer;
+  cursor: default;
   gap: 6px;
   transition: background 0.15s ease;
-}
-
-.tree-item:hover {
-  background-color: rgba(255, 255, 255, 0.05);
-  color: var(--text-main);
 }
 
 .tree-item.active {
@@ -1147,7 +1142,7 @@ body {
   cursor: pointer;
   padding: 2px 4px;
 }
-.btn-icon:hover { color: var(--text-main); }
+.btn-icon:hover:not(:disabled) { color: var(--text-main); }
 
 .btn-ghost {
   background: transparent;
@@ -1156,7 +1151,13 @@ body {
   font-size: 13px;
   cursor: pointer;
 }
-.btn-ghost:hover { color: var(--text-main); }
+.btn-ghost:hover:not(:disabled) { color: var(--text-main); }
+
+.btn-icon:disabled,
+.btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* Login gate */
 .login-overlay {

@@ -273,11 +273,6 @@ describe('CLI Deep Coverage Suite', () => {
     await runCli('ssh', 'add', 'my-ssh', 'localhost', '--project', fixture.root);
   });
 
-  it('tests ui command without opening browser', async () => {
-    const out = await runCli('ui', '--no-open', '--port', '0', '--project', fixture.root);
-    expect(out.stdout).toContain('Flightdeck Control Plane Dashboard');
-  });
-
   it('tests mcp command', async () => {
     const out = await runCli('mcp', '--help');
     expect(out.stdout).toBeDefined();

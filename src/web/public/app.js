@@ -123,6 +123,7 @@ let state = {
 
 let activeSessionIdForLogs = null;
 let selectedFleetId = null;
+let workspace = null;
 
 function el(id) {
   return document.getElementById(id);
@@ -178,9 +179,12 @@ function relativeTime(ms) {
 
 // ---------------------------------------------------------------- data layer
 
+let stateRequest = 0;
 async function fetchState() {
+  const ticket = ++stateRequest;
   try {
     const res = await fetch('/api/state', { headers: authedHeaders() });
+    if (ticket !== stateRequest) return;
     if (res.status === 401) {
       handleUnauthorized();
       return;
@@ -189,11 +193,13 @@ async function fetchState() {
       showError(`state request failed: ${res.status}`);
       return;
     }
-    state = await res.json();
+    const next = await res.json();
+    if (ticket !== stateRequest) return;
+    state = next;
     clearError();
     renderUI();
   } catch (err) {
-    showError(err.message);
+    if (ticket === stateRequest) showError(err.message);
   }
 }
 
@@ -234,6 +240,7 @@ let eventSource = null;
 
 /** Tear down the poll loop and the SSE stream the dashboard runs on. */
 function stopDashboard() {
+  stateRequest++;
   if (pollTimer !== null) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -287,6 +294,8 @@ function hideLoginError() {
 
 /** Clear the capability token and return to the login screen. */
 function lockDashboard() {
+  if (workspace && !workspace.canLeave()) return;
+  workspace?.reset();
   capabilityToken = '';
   clearStoredToken();
   stopDashboard();
@@ -341,6 +350,7 @@ function renderUI() {
   renderFleet();
   renderToolkit();
   renderReplyTargets();
+  workspace?.update(state);
 }
 
 function renderTitle() {
@@ -365,8 +375,12 @@ function renderProjectTree() {
     { key: 'playbooks', icon: '⚡', label: 'Playbooks', count: state.playbooks.length },
     { key: 'argus', icon: '👁', label: 'Argus fleets', count: state.argus.length },
   ];
+  const query = (el('project-search')?.value || '').trim().toLowerCase();
+  const projectMatches = (state.projectName || '').toLowerCase().includes(query);
+  const visibleSections = sections.filter((section) => projectMatches || section.label.toLowerCase().includes(query));
 
-  tree.innerHTML = `
+  const focusedSection = document.activeElement?.dataset?.section;
+  const markup = `
     <div class="tree-group active-group">
       <div class="tree-item group-header">
         <span class="chevron">▼</span>
@@ -374,19 +388,24 @@ function renderProjectTree() {
         <span class="item-name font-bold">${escapeHtml(state.projectName || NO_VALUE)}</span>
       </div>
       <div class="tree-children">
-        ${sections
+        ${visibleSections
           .map(
             (s) => `
-          <div class="tree-item indent-1" data-section="${s.key}">
+          <button type="button" class="tree-item indent-1 workspace-nav" data-section="${s.key}" aria-current="${(workspace?.section ?? 'argus') === s.key ? 'page' : 'false'}">
             <span class="icon">${s.icon}</span>
             <span class="item-name">${s.label}</span>
             <span class="count-pill">${s.count}</span>
-          </div>`
+          </button>`
           )
           .join('')}
+        ${visibleSections.length === 0 ? '<p class="empty-state">No matching sections.</p>' : ''}
       </div>
     </div>
   `;
+  if (tree.innerHTML !== markup) {
+    tree.innerHTML = markup;
+    if (focusedSection) tree.querySelector(`[data-section="${focusedSection}"]`)?.focus({ preventScroll: true });
+  }
 }
 
 /**
@@ -654,18 +673,28 @@ function renderFleet() {
   if (!container) return;
 
   const sessions = state.sessions ?? [];
+  const query = (el('session-filter')?.value || '').trim().toLowerCase();
+  const visibleSessions = sessions.filter((session) =>
+    [session.name, session.harness, session.status, session.worktree, session.telemetry?.model]
+      .some((value) => String(value ?? '').toLowerCase().includes(query))
+  );
   const hung = new Set((state.watchdog?.hungSessions ?? []).map((s) => s.id ?? s));
 
   const count = el('fleet-child-count');
-  if (count) count.textContent = String(sessions.length);
+  if (count) count.textContent = query ? `${visibleSessions.length} / ${sessions.length}` : String(sessions.length);
 
   if (sessions.length === 0) {
     container.innerHTML = `<p class="empty-state">No sessions. Start one with <code>deck session start</code>.</p>`;
     return;
   }
 
+  if (visibleSessions.length === 0) {
+    container.innerHTML = '<p class="empty-state">No sessions match your filter.</p>';
+    return;
+  }
+
   container.innerHTML = '';
-  for (const s of sessions) {
+  for (const s of visibleSessions) {
     container.appendChild(createSessionCard(s, hung));
   }
 }
@@ -869,6 +898,10 @@ function bindModal(openIds, modalId, closeIds) {
 }
 
 function setupEventHandlers() {
+  el('projects-tree')?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-section]');
+    if (target && workspace?.navigate(target.dataset.section)) renderProjectTree();
+  });
   bindModal(['btn-reply-now'], 'modal-reply', ['btn-close-reply', 'btn-cancel-reply']);
   bindModal(
     ['btn-spawn-session', 'btn-open-session'],
@@ -959,12 +992,9 @@ function setupEventHandlers() {
     }
   });
 
-  el('project-search')?.addEventListener('input', (e) => {
-    const q = e.target.value.toLowerCase().trim();
-    for (const item of document.querySelectorAll('.tree-item')) {
-      item.style.display = !q || item.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
-    }
-  });
+  el('project-search')?.addEventListener('input', renderProjectTree);
+  el('session-filter')?.addEventListener('input', renderFleet);
+  el('btn-search-sessions')?.addEventListener('click', () => el('session-filter')?.focus());
 
   el('btn-pause-resume')?.addEventListener('click', async () => {
     const fleet = selectedFleet();
@@ -1014,6 +1044,20 @@ function setupEventHandlers() {
 
 document.addEventListener('DOMContentLoaded', () => {
   readCapabilityToken();
+  workspace = globalThis.createWorkspace?.({
+    root: el('workspace-panel'),
+    missionRoot: el('mission-panel'),
+    request: async (url, options = {}) => {
+      const response = await fetch(url, { ...options, headers: authedHeaders({ 'Content-Type': 'application/json' }) });
+      const payload = await response.json();
+      if (response.status === 401) handleUnauthorized();
+      if (!response.ok) throw Object.assign(new Error(payload.error || `Request failed (${response.status})`), { status: response.status });
+      return payload;
+    },
+    refresh: fetchState,
+    onLogs: openLogsModal,
+    onPlaybook: runToolkitAction,
+  }) ?? null;
   setupEventHandlers();
   if (capabilityToken) {
     startDashboard();

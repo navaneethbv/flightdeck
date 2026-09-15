@@ -1,16 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { runCli } from '../helpers.js';
 
 describe('CLI Main Entrypoint', () => {
-  it('imports cli/index.ts and executes version flag without error', async () => {
-    const oldArgv = process.argv;
-    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    try {
-      process.argv = ['node', 'deck', '--version'];
-      await import('../../src/cli/index.js');
-      expect(writeSpy).toHaveBeenCalled();
-    } finally {
-      process.argv = oldArgv;
-      writeSpy.mockRestore();
-    }
+  it('prints its version and exits successfully as a real CLI process', () => {
+    const result = runCli(['--version'], { cwd: process.cwd() });
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('0.1.0');
+    expect(result.stderr).not.toContain('error:');
   });
 });

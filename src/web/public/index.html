@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Flightdeck — Control Plane for Coding Agents</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -24,8 +25,8 @@
       </div>
       <div class="titlebar-actions">
         <button id="btn-refresh" class="btn-ghost" title="Refresh state">↻</button>
-        <button id="btn-spectate-all" class="btn-ghost" title="Spectator Mode">☵</button>
-        <button id="btn-theme-toggle" class="btn-ghost" title="Settings">⚙</button>
+        <button id="btn-spectate-all" class="btn-ghost" disabled aria-label="Spectator mode unavailable" title="Spectator mode is unavailable in the dashboard. Open a session to view its logs.">☵</button>
+        <button id="btn-theme-toggle" class="btn-ghost" disabled aria-label="Settings unavailable" title="Settings are unavailable in the dashboard. Use deck config.">⚙</button>
         <button id="btn-lock" class="btn-ghost" title="Lock dashboard (clear capability token)">🔒</button>
       </div>
     </header>
@@ -56,14 +57,13 @@
           <div class="sidebar-title-row">
             <h3>Projects</h3>
             <div class="sidebar-tools">
-              <button id="btn-add-project" class="btn-icon" title="New project">+</button>
-              <button id="btn-collapse-all" class="btn-icon" title="Collapse tree">▤</button>
+              <button id="btn-add-project" class="btn-icon" disabled aria-label="New project unavailable" title="This dashboard serves one project. Use deck ui --project to open another.">+</button>
+              <button id="btn-collapse-all" class="btn-icon" disabled aria-label="Collapse tree unavailable" title="Collapsing the project tree is unavailable.">▤</button>
             </div>
           </div>
           <div class="search-box">
             <span class="search-icon">🔍</span>
             <input type="text" id="project-search" placeholder="Filter projects..." aria-label="Filter projects" />
-            <kbd class="shortcut-tag">⌘J</kbd>
           </div>
         </div>
 
@@ -88,11 +88,11 @@
             <span class="bc-item" id="project-root-label">-</span>
           </div>
           <div class="canvas-controls">
-            <button class="btn-icon" id="btn-fullscreen" title="Expand">⛶</button>
+            <button class="btn-icon" id="btn-fullscreen" disabled aria-label="Expand canvas unavailable" title="Expanding the canvas is unavailable.">⛶</button>
           </div>
         </nav>
 
-        <div class="canvas-content">
+        <div class="canvas-content" id="mission-panel">
           <section class="card mission-profile-card">
             <div id="mission-empty" class="empty-state-panel">
               <h2>No Argus fleet configured</h2>
@@ -221,6 +221,7 @@
           </section>
         </div>
 
+        <section id="workspace-panel" class="workspace-panel hidden" aria-label="Project workspace"></section>
       </main>
 
       <!-- 3. RIGHT COLUMN: Sessions Fleet & Action Toolkit -->
@@ -233,8 +234,8 @@
             </div>
             <div class="fleet-tools">
               <button class="btn-icon" id="btn-spawn-session" title="New Session">+</button>
-              <button class="btn-icon" id="btn-search-sessions" title="Filter">🔍</button>
-              <button class="btn-icon" id="btn-prune-sessions" title="Prune stopped">🗑</button>
+              <button class="btn-icon" id="btn-search-sessions" aria-label="Focus session filter" title="Filter sessions">🔍</button>
+              <button class="btn-icon" id="btn-prune-sessions" disabled aria-label="Prune stopped sessions unavailable" title="Pruning stopped sessions is unavailable. Session history is retained.">🗑</button>
             </div>
           </div>
           <div class="sessions-filter-row">
@@ -264,8 +265,8 @@
               <span class="toolkit-tab active font-bold">⚡ Toolkit</span>
             </div>
             <div class="toolkit-controls">
-              <button class="btn-icon" title="Customize toolkit">⚙</button>
-              <button class="btn-icon" title="Add action">+</button>
+              <button class="btn-icon" disabled aria-label="Customize toolkit unavailable" title="Toolkit customization is unavailable in the dashboard. Edit project playbooks on disk.">⚙</button>
+              <button class="btn-icon" disabled aria-label="Add action unavailable" title="Adding actions is unavailable in the dashboard. Use deck playbook save.">+</button>
             </div>
           </div>
 
@@ -355,6 +356,7 @@
     </div>
   </div>
 
+  <script src="workspace.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
 import fs from 'node:fs';
 import path from 'node:path';
-import net from 'node:net';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createWebServer } from '../../src/server/index.js';
 import { SessionManager } from '../../src/sessions/manager.js';
 import { ArgusManager } from '../../src/argus/manager.js';
 import { NotesStore } from '../../src/notes/store.js';
-import { makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
+import { cliDistPath, makeRepo, makeFakeHarness, spawnCli, sleep } from '../helpers.js';
 
 // Names, accounts and paths traced from the reference screenshot. The
 // screenshot is a layout reference, never a data fixture.
@@ -267,6 +267,10 @@ interface FleetClient {
   render(): void;
   container: ShimNode;
   countCards(): number;
+  sessionFilter: ShimNode;
+  projectFilter: ShimNode;
+  tree: ShimNode;
+  renderTree(): void;
 }
 
 /**
@@ -278,8 +282,17 @@ interface FleetClient {
  */
 function loadFleetClient(appJs: string): FleetClient {
   const container = makeContainerNode();
+  const sessionFilter = makeShimNode('input');
+  const projectFilter = makeShimNode('input');
+  const tree = makeContainerNode();
+  const nodes: Record<string, ShimNode> = {
+    [FLEET_CONTAINER_ID]: container,
+    'session-filter': sessionFilter,
+    'project-search': projectFilter,
+    'projects-tree': tree,
+  };
   const documentShim = {
-    getElementById: (id: string) => (id === FLEET_CONTAINER_ID ? container : null),
+    getElementById: (id: string) => nodes[id] ?? null,
     createElement: (tag: string) => makeShimNode(tag),
     addEventListener: () => {},
   };
@@ -288,6 +301,7 @@ function loadFleetClient(appJs: string): FleetClient {
     ;globalThis.__flightdeckTest = {
       setState: (s) => { state = s; },
       ${FLEET_RENDER_FN},
+      renderProjectTree,
     };
   `;
   const sandbox: Record<string, unknown> = {
@@ -298,13 +312,17 @@ function loadFleetClient(appJs: string): FleetClient {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(appJs + expose, sandbox);
-  const api = sandbox.__flightdeckTest as { setState(s: unknown): void };
+  const api = sandbox.__flightdeckTest as { setState(s: unknown): void; renderProjectTree(): void };
   const render = (api as unknown as Record<string, unknown>)[FLEET_RENDER_FN] as () => void;
   return {
     setState: api.setState,
     render,
     container,
     countCards: () => container.querySelectorAll(SESSION_CARD_SELECTOR).length,
+    sessionFilter,
+    projectFilter,
+    tree,
+    renderTree: api.renderProjectTree,
   };
 }
 
@@ -572,6 +590,54 @@ describe('Dashboard data integrity (E2E)', () => {
     client.container.innerHTML += `<div class="session-card" data-id="fabricated"></div>`;
     expect(client.countCards()).toBe(state.sessions.length + 1);
     expect(() => expect(client.countCards()).toBe(state.sessions.length)).toThrow();
+  });
+});
+
+describe('Dashboard filters (E2E)', () => {
+  it('filters real session cards across refreshes, including empty results and clearing', () => {
+    const client = loadFleetClient(readAppJs());
+    client.setState({
+      sessions: [
+        { id: 'alpha', name: 'Alpha worker', harness: 'claude', status: 'stopped', lastActivityAt: Date.now() },
+        { id: 'beta', name: 'Beta worker', harness: 'gemini', status: 'running', lastActivityAt: Date.now() },
+      ],
+    });
+    client.sessionFilter.value = '  ALPHA ';
+    client.render();
+    expect(client.countCards()).toBe(1);
+    expect(client.container.children[0].dataset.id).toBe('alpha');
+    client.render();
+    expect(client.countCards()).toBe(1);
+    client.sessionFilter.value = 'gemini';
+    client.render();
+    expect(client.container.children[0].dataset.id).toBe('beta');
+    client.sessionFilter.value = 'missing';
+    client.render();
+    expect(client.countCards()).toBe(0);
+    expect(client.container.innerHTML).toContain('No sessions match your filter.');
+    client.sessionFilter.value = '';
+    client.render();
+    expect(client.countCards()).toBe(2);
+  });
+
+  it('preserves project section filtering when state refreshes', () => {
+    const client = loadFleetClient(readAppJs());
+    client.setState({ projectName: 'my-project', sessions: [], worktrees: [], notes: [], tables: [], playbooks: [], argus: [] });
+    client.projectFilter.value = ' NOTES ';
+    for (let refresh = 0; refresh < 2; refresh++) {
+      client.renderTree();
+      expect(client.tree.innerHTML).toContain('data-section="notes"');
+      expect(client.tree.innerHTML).not.toContain('data-section="sessions"');
+    }
+    client.projectFilter.value = 'missing';
+    client.renderTree();
+    expect(client.tree.innerHTML).toContain('No matching sections.');
+    client.projectFilter.value = 'my-project';
+    client.renderTree();
+    expect(client.tree.innerHTML).toContain('data-section="sessions"');
+    client.projectFilter.value = '';
+    client.renderTree();
+    expect(client.tree.innerHTML).toContain('data-section="sessions"');
   });
 });
 
@@ -858,22 +924,27 @@ describe('Dashboard login gate (E2E)', () => {
 });
 
 describe('deck ui login entry (E2E)', () => {
-  /** The CLI coerces `--port 0` to its default 4173, so probe a free port first. */
-  function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const probe = net.createServer();
-      probe.on('error', reject);
-      probe.listen(0, '127.0.0.1', () => {
-        const port = (probe.address() as net.AddressInfo).port;
-        probe.close(() => resolve(port));
+  it.each(['invalid', '4173junk', '1.5', '-1', '65536', ''])('rejects invalid port %j before starting the server', (port) => {
+    const fixture = makeRepo();
+    try {
+      const result = spawnSync(process.execPath, [cliDistPath(), 'ui', '--port', port, '--no-open'], {
+        cwd: fixture.root,
+        env: process.env,
+        encoding: 'utf8',
+        timeout: 10000,
       });
-    });
-  }
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('port must be an integer between 0 and 65535');
+      expect(result.stdout).not.toContain('URL:');
+    } finally {
+      fixture.cleanup();
+    }
+  });
 
   it('prints a URL whose capability token unlocks the real server', async () => {
     const fixture = makeRepo();
-    const port = await freePort();
-    const child = spawnCli(['ui', '--port', String(port), '--no-open', '--project', fixture.root], {
+    const child = spawnCli(['ui', '--port', '0', '--no-open', '--project', fixture.root], {
       cwd: fixture.root,
     });
     let stdout = '';
@@ -893,6 +964,8 @@ describe('deck ui login entry (E2E)', () => {
       expect(url, `deck ui stdout: ${stdout} stderr: ${stderr}`).toMatch(
         /^http:\/\/127\.0\.0\.1:\d+\/#token=[\w-]+$/
       );
+      expect(Number(new URL(url).port)).toBeGreaterThan(0);
+      expect(new URL(url).port).not.toBe('4173');
       const token = url.slice(url.indexOf('#token=') + '#token='.length);
       // url.split('#')[0] ends in '/', so strip it before appending a path.
       const base = url.split('#')[0].replace(/\/+$/, '');

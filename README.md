@@ -3,7 +3,7 @@
 > **Terminal & Web Control-Plane for AI Coding Agents** — Run, isolate, supervise, and orchestrate fleets of coding-agent harnesses (Google Gemini, Claude Code, OpenAI Codex, OpenCode) across Git worktrees with MCP tools, structured project memory, and autonomous Argus orchestration.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.16.0-green.svg)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-Protocol%20v1.12-purple.svg)](https://modelcontextprotocol.io/)
 
 ---
@@ -53,7 +53,7 @@
 ## 📦 Installation & Requirements
 
 ### Requirements
-- **Node.js**: `v22.5.0` or higher (state uses the built-in `node:sqlite`, not a native module)
+- **Node.js**: `v22.16.0` or higher (state uses built-in `node:sqlite` with FTS5 full-text search support)
 - **Git**: `2.30+` installed on system `PATH`
 - **Agent Harnesses** *(optional, at least one recommended)*:
   - Google Gemini CLI (`gemini`)
@@ -107,6 +107,18 @@ deck session start bugfix-123 --harness gemini --worktree-new bugfix-branch --he
 # must carry it; static assets load without it so the page can show the gate.
 deck ui
 ```
+
+Use the project navigation to open Notes, Tables, Worktrees, Sessions, Playbooks, or Argus fleets.
+The workspace supports:
+
+- **Notes:** Search, create, and edit Markdown source, with explicit saves, unsaved-change prompts, and conflict detection when a note changes elsewhere.
+- **Tables:** Inspect column types and browse saved rows in pages of 50.
+- **Worktrees:** Inspect branch status, modified and untracked files, and a tracked diff that includes branch commits and local changes.
+- **Sessions and Playbooks:** Open session logs or run a project workflow through the existing approval controls.
+
+Note drafts stay in the current tab until saved.
+A failed or conflicting save preserves your draft; copy the changes before reloading the saved note to reconcile them.
+Table and worktree views are read-only and have a Refresh control.
 
 ### 4. Initialize an Autonomous Argus Mission
 ```bash
