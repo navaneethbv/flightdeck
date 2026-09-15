@@ -108,6 +108,18 @@ deck session start bugfix-123 --harness gemini --worktree-new bugfix-branch --he
 deck ui
 ```
 
+Use the project navigation to open Notes, Tables, Worktrees, Sessions, Playbooks, or Argus fleets.
+The workspace supports:
+
+- **Notes:** Search, create, and edit Markdown source, with explicit saves, unsaved-change prompts, and conflict detection when a note changes elsewhere.
+- **Tables:** Inspect column types and browse saved rows in pages of 50.
+- **Worktrees:** Inspect branch status, modified and untracked files, and a tracked diff that includes branch commits and local changes.
+- **Sessions and Playbooks:** Open session logs or run a project workflow through the existing approval controls.
+
+Note drafts stay in the current tab until saved.
+A failed or conflicting save preserves your draft; copy the changes before reloading the saved note to reconcile them.
+Table and worktree views are read-only and have a Refresh control.
+
 ### 4. Initialize an Autonomous Argus Mission
 ```bash
 # Scaffold a structured Mission note using a template

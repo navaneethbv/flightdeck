@@ -25,6 +25,7 @@ import { getAdapter } from '../sessions/harness.js';
 import { TelemetryStore } from '../sessions/telemetry.js';
 import { spawnSync } from 'node:child_process';
 import type { Session } from '../core/types.js';
+import { handleWorkspaceRequest } from './workspace.js';
 
 /**
  * How long a dashboard confirmation prompt stays open before the run fails
@@ -400,6 +401,11 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // URL at startup. Static assets are unauthenticated so the page can load.
     if (pathname.startsWith('/api/') && !isAuthorized(req, pathname)) {
       sendError(res, 401, 'missing or invalid capability token');
+      return;
+    }
+
+    if (pathname === '/api/workspace' || pathname.startsWith('/api/workspace/')) {
+      await handleWorkspaceRequest(req, res, projectRoot, sendJson, broadcastUpdate);
       return;
     }
 

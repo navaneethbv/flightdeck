@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Flightdeck — Control Plane for Coding Agents</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -91,7 +92,7 @@
           </div>
         </nav>
 
-        <div class="canvas-content">
+        <div class="canvas-content" id="mission-panel">
           <section class="card mission-profile-card">
             <div id="mission-empty" class="empty-state-panel">
               <h2>No Argus fleet configured</h2>
@@ -220,6 +221,7 @@
           </section>
         </div>
 
+        <section id="workspace-panel" class="workspace-panel hidden" aria-label="Project workspace"></section>
       </main>
 
       <!-- 3. RIGHT COLUMN: Sessions Fleet & Action Toolkit -->
@@ -354,6 +356,7 @@
     </div>
   </div>
 
+  <script src="workspace.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

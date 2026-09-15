@@ -41,6 +41,23 @@ function tableSqlName(name: string): string {
   return `t_${name}`;
 }
 
+function paginationClause(limit?: number, offset?: number): { sql: string; params: number[] } {
+  let sql = '';
+  const params: number[] = [];
+  if (limit !== undefined) {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive integer');
+    sql += ' LIMIT ?';
+    params.push(limit);
+  }
+  if (offset !== undefined) {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
+    if (limit === undefined) sql += ' LIMIT -1';
+    sql += ' OFFSET ?';
+    params.push(offset);
+  }
+  return { sql, params };
+}
+
 function coerce(value: unknown, type: ColumnType): unknown {
   if (value === null || value === undefined) return null;
   switch (type) {
@@ -147,7 +164,7 @@ export class TablesStore {
 
   query(
     name: string,
-    opts: { where?: Record<string, unknown>; limit?: number; orderBy?: { col: string; dir?: 'asc' | 'desc' } } = {}
+    opts: { where?: Record<string, unknown>; limit?: number; offset?: number; orderBy?: { col: string; dir?: 'asc' | 'desc' } } = {}
   ): Record<string, unknown>[] {
     const table = this.assertTable(name);
     const sqlName = tableSqlName(name);
@@ -166,9 +183,12 @@ export class TablesStore {
       checkIdent(opts.orderBy.col, 'column');
       sql += ` ORDER BY "${opts.orderBy.col}" ${opts.orderBy.dir === 'asc' ? 'ASC' : 'DESC'}`;
     }
-    if (opts.limit !== undefined) {
-      sql += ` LIMIT ${Math.max(1, Math.floor(opts.limit))}`;
+    else {
+      sql += ' ORDER BY rowid ASC';
     }
+    const page = paginationClause(opts.limit, opts.offset);
+    sql += page.sql;
+    params.push(...page.params);
     return this.db.prepare(sql).all(...(params as SQLInputValue[])) as Record<string, unknown>[];
   }
 

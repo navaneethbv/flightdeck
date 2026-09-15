@@ -73,7 +73,7 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   const result = spawnSync('git', ['-C', projectRoot, 'worktree', 'list', '--porcelain'], {
     encoding: 'utf8',
   });
-  if (result.status !== 0) return [];
+  if (result.status !== 0) throw new Error(`git worktree list failed: ${result.stderr?.trim() || result.error?.message || 'unknown Git error'}`);
   const out: WorktreeInfo[] = [];
   const wtDir = normalizeWorktreesDir(projectRoot);
   let current: Partial<WorktreeInfo> & { path?: string } = {};
@@ -144,6 +144,31 @@ export function ensureFlightdeckDirIgnored(projectRoot: string): void {
   }
 }
 
+function inspectGit(dir: string, args: string[]): string {
+  // This local CLI uses the operator's installed Git, like the other worktree commands.
+  // HTTP inputs cannot set PATH or the executable; no shell is involved.
+  const result = spawnSync('git', ['-C', dir, ...args], { // NOSONAR: S4036, operator-owned PATH is the CLI trust boundary.
+    encoding: 'utf8',
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0 || result.error) {
+    throw new Error(`git ${args[0]} failed: ${result.error?.message || result.stderr?.trim() || 'unknown Git error'}`);
+  }
+  return result.stdout;
+}
+
+function defaultBase(projectRoot: string): string {
+  // Resolve through the same operator-owned PATH as every other worktree command.
+  const remote = spawnSync('git', ['-C', projectRoot, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }); // NOSONAR: S4036
+  if (remote.status === 0) return remote.stdout.trim();
+  for (const branch of ['main', 'master']) {
+    const result = spawnSync('git', ['-C', projectRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    if (result.status === 0) return branch;
+  }
+  return inspectGit(projectRoot, ['symbolic-ref', '--short', 'HEAD']).trim();
+}
+
 export function worktreeStatus(
   projectRoot: string,
   name: string
@@ -159,65 +184,46 @@ export function worktreeStatus(
   assertGitRepo(projectRoot);
   const dir = worktreePath(projectRoot, name);
   if (!fs.existsSync(dir)) throw new Error(`worktree "${name}" does not exist`);
-
-  const branchRes = spawnSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' });
-  const branch = branchRes.stdout?.trim() || `flightdeck/${name}`;
-
-  const statusRes = spawnSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' });
-  const lines = (statusRes.stdout || '').split('\n').filter((l) => l.trim().length > 0);
-
+  const branch = inspectGit(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  const entries = inspectGit(dir, ['status', '--porcelain', '-z']).split('\0');
   const modified: string[] = [];
   const untracked: string[] = [];
-
-  for (const line of lines) {
-    const code = line.slice(0, 2);
-    const file = line.slice(3).trim();
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const code = entry.slice(0, 2);
+    const file = entry.slice(3);
     if (code === '??') untracked.push(file);
     else modified.push(file);
+    // Porcelain -z supplies the source path as a second record for renames.
+    if (code.includes('R') || code.includes('C')) index++;
   }
-
-  let ahead = 0;
-  const aheadRes = spawnSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD', '^main'], { encoding: 'utf8' });
-  if (aheadRes.status === 0) {
-    ahead = Number.parseInt(aheadRes.stdout.trim(), 10) || 0;
-  }
-
-  return {
-    name,
-    path: dir,
-    branch,
-    clean: modified.length === 0 && untracked.length === 0,
-    modified,
-    untracked,
-    ahead,
-  };
+  const base = defaultBase(projectRoot);
+  const ahead = Number(inspectGit(dir, ['rev-list', '--count', `HEAD`, `^${base}`, '--']).trim());
+  return { name, path: dir, branch, clean: modified.length === 0 && untracked.length === 0, modified, untracked, ahead };
 }
 
 export function worktreeDiff(
   projectRoot: string,
   name: string,
-  baseBranch = 'main'
-): { name: string; branch: string; diff: string; filesChanged: number } {
+  baseBranch?: string
+): { name: string; branch: string; diff: string; filesChanged: number; base: string; comparison: string } {
   assertGitRepo(projectRoot);
   const dir = worktreePath(projectRoot, name);
   if (!fs.existsSync(dir)) throw new Error(`worktree "${name}" does not exist`);
-
-  const branchRes = spawnSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' });
-  const branch = branchRes.stdout?.trim() || `flightdeck/${name}`;
-
-  let diffRes = spawnSync('git', ['-C', dir, 'diff', `${baseBranch}...HEAD`], { encoding: 'utf8' });
-  if (diffRes.status !== 0 || !diffRes.stdout.trim()) {
-    diffRes = spawnSync('git', ['-C', dir, 'diff', 'HEAD'], { encoding: 'utf8' });
-  }
-
-  const diff = diffRes.stdout || '';
-  const fileCount = (diff.match(/^diff --git/gm) || []).length;
-
+  const branch = inspectGit(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  const base = baseBranch ?? defaultBase(projectRoot);
+  const mergeBase = inspectGit(dir, ['merge-base', '--', base, 'HEAD']).trim();
+  // One comparison includes branch commits plus staged and unstaged changes.
+  // Untracked files remain listed separately in worktreeStatus.
+  const diff = inspectGit(dir, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', mergeBase, '--']);
   return {
     name,
     branch,
     diff,
-    filesChanged: fileCount,
+    filesChanged: (diff.match(/^diff --git/gm) || []).length,
+    base,
+    comparison: `Tracked working tree compared with merge base of ${base} and HEAD (${mergeBase.slice(0, 12)}); untracked files listed separately`,
   };
 }
 

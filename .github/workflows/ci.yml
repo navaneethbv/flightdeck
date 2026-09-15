@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
@@ -24,7 +23,7 @@ jobs:
           node-version: '22.16.0'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm test -- test/e2e/dashboard.test.ts test/unit/cli-entry.test.ts
+      - run: npm test -- test/e2e/dashboard.test.ts test/unit/cli-entry.test.ts test/integration/workspace.test.ts test/unit/workspace-client.test.ts
 
   lint:
     name: lint
