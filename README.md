@@ -66,7 +66,7 @@
 ### Install from Source
 ```bash
 # Clone the repository
-git clone https://github.com/navaneethbv/flightdeck.git
+git clone <repository-url>
 cd flightdeck
 
 # Install dependencies

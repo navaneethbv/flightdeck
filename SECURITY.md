@@ -9,7 +9,7 @@ There is no long-term support branch; only the latest commit on `main` receives 
 
 Please do not open a public GitHub issue for a security vulnerability.
 
-Instead, use [GitHub's private vulnerability reporting](https://github.com/navaneethbv/flightdeck/security/advisories/new) for this repository ("Security" tab → "Report a vulnerability").
+Instead, use GitHub's private vulnerability reporting for this repository ("Security" tab → "Report a vulnerability").
 Include the affected file(s) or command, the impact, and steps to reproduce.
 
 There is no fixed SLA at this stage of the project, but reports will be acknowledged and triaged as soon as possible.
