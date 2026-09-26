@@ -14,12 +14,12 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           Flightdeck Control Plane                          │
+│                           Flightdeck Control Plane                              │
 ├──────────────────────────┬──────────────────────────┬───────────────────────────┤
 │  CLI & TUI Interfaces    │  Web GUI Dashboard       │  Argus Multi-Agent Fleet  │
-│  • deck session / work  │  • 3-Column Dark UI      │  • Mission Note Driven    │
-│  • deck tui (Ink/React) │  • Real-time SSE Sync    │  • Pulse Execution Loop   │
-│  • deck doctor / repair │  • Action Toolkit        │  • Task Auto-Staffing     │
+│  • deck session / work   │  • 3-Column Dark UI      │  • Mission Note Driven    │
+│  • deck tui (Ink/React)  │  • Real-time SSE Sync    │  • Pulse Execution Loop   │
+│  • deck doctor / repair  │  • Action Toolkit        │  • Task Auto-Staffing     │
 ├──────────────────────────┴──────────────────────────┴───────────────────────────┤
 │                             MCP Server & Engine Core                            │
 │  • Per-Session Token Auth • Policy Matrices (child / default / manager)         │
