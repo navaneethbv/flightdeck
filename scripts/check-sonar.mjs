@@ -45,8 +45,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     await checkSonar({ repository: process.env.GITHUB_REPOSITORY, revision: process.env.PR_HEAD_SHA, pullRequest: process.env.PR_NUMBER, token: process.env.GH_TOKEN });
     console.log('Sonar: zero new issues and no security hotspots awaiting review.');
-  } catch (error) {
-    console.error(JSON.stringify(error instanceof Error ? error.message : 'Sonar verification failed'));
+  } catch {
+    console.error('Sonar verification failed. Inspect the SonarCloud check, open issues, and security hotspots for this pull request.');
     process.exitCode = 1;
   }
 }
