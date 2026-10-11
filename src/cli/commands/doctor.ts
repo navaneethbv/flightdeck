@@ -18,7 +18,7 @@ type Opts = Record<string, string | boolean | undefined>;
 function tmuxCheck(): { name: string; ok: boolean; detail: string } {
   const binary = findExecutable('tmux');
   const result = binary ? spawnSync(binary, ['-V'], { encoding: 'utf8' }) : null;
-  if (!result || result.status !== 0 || !result.stdout) {
+  if (result?.status !== 0 || !result.stdout) {
     return { name: 'tmux', ok: false, detail: 'not installed (only `deck fleet` needs it)' };
   }
   const version = result.stdout.trim();

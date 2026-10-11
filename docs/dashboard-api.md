@@ -48,3 +48,7 @@ Stopping uses the existing `POST /api/sessions/<id>/stop` operation and the same
 CLI health and repair commands use the same success status and exit code in text and JSON modes.
 Git and SSH commands resolve installed executables from absolute `PATH` directories, skipping empty and relative entries that could select a repository file.
 macOS secrets use `/usr/bin/security` directly.
+
+The `sonar-zero-issues` pull request check waits for a completed Sonar analysis of the current commit.
+It requires a successful quality gate, zero new issue annotations, zero unresolved new issues, and no security hotspots awaiting review.
+Missing, stale, skipped, or unavailable analysis fails the check instead of being treated as clean.

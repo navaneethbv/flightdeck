@@ -24,7 +24,7 @@ describe('dashboard request and confirmation safety', () => {
 
   function request(route: string, body?: unknown) {
     // The base is this test server on 127.0.0.1; every route is supplied by the test.
-    return fetch(`${base}${route}`, { // nosemgrep: rules_lgpl.javascript.ssrf.rule-node-ssrf
+    return fetch(`${base}${route}`, { // nosemgrep: rules_lgpl_javascript_ssrf_rule-node-ssrf
       method: body === undefined ? 'GET' : 'POST',
       headers: { 'X-Flightdeck-Token': server.capabilityToken, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -34,9 +34,9 @@ describe('dashboard request and confirmation safety', () => {
   function playbook(name: string, yaml: string) {
     const dir = path.join(fixture.root, '.flightdeck', 'playbooks');
     // Isolated temporary repository fixture; no external path input.
-    fs.mkdirSync(dir, { recursive: true }); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    fs.mkdirSync(dir, { recursive: true }); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
     // Isolated temporary repository fixture; no external path input.
-    fs.writeFileSync(path.join(dir, `${name}.yml`), yaml); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    fs.writeFileSync(path.join(dir, `${name}.yml`), yaml); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
   }
 
   it.each([{ body: null }, { body: [] }, { body: 'text' }, { body: 1 }])('rejects a non-object JSON request: $body', async ({ body }) => {
@@ -70,9 +70,9 @@ describe('dashboard request and confirmation safety', () => {
   it('rejects playbook paths outside the configured directories', async () => {
     const file = path.join(fixture.root, '.flightdeck', 'outside.yml');
     // Isolated temporary repository fixture; no external path input.
-    fs.mkdirSync(path.dirname(file), { recursive: true }); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    fs.mkdirSync(path.dirname(file), { recursive: true }); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
     // Isolated temporary repository fixture; no external path input.
-    fs.writeFileSync(file, 'name: outside\nsteps:\n  - id: write\n    type: note\n    operation: create\n    title: Escaped\n    body: forbidden\n'); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    fs.writeFileSync(file, 'name: outside\nsteps:\n  - id: write\n    type: note\n    operation: create\n    title: Escaped\n    body: forbidden\n'); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
     const response = await request('/api/toolkit/run', { action: '../outside' });
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'Invalid playbook name' });
@@ -97,12 +97,12 @@ describe('dashboard request and confirmation safety', () => {
     const run = await (await request(`/api/toolkit/run/${runId}`)).json();
     expect(run.status).toBe('awaiting_confirmation');
     // Isolated temporary repository fixture; no external path input.
-    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
     await request('/api/toolkit/confirm', { confirmId: run.confirm.id, operation: run.confirm.operation, ok: false });
     const denied = await (await request(`/api/toolkit/run/${runId}`)).json();
     expect(denied.status).toBe('failed');
     // Isolated temporary repository fixture; no external path input.
-    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
   });
 
   it('resolves nested project playbooks and approves their external steps', async () => {
@@ -112,11 +112,11 @@ describe('dashboard request and confirmation safety', () => {
     const run = await (await request(`/api/toolkit/run/${runId}`)).json();
     expect(run.status).toBe('awaiting_confirmation');
     // Isolated temporary repository fixture; no external path input.
-    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    expect(fs.existsSync(path.join(fixture.root, 'marker.txt'))).toBe(false); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
     await request('/api/toolkit/confirm', { confirmId: run.confirm.id, operation: run.confirm.operation, ok: true });
     expect((await (await request(`/api/toolkit/run/${runId}`)).json()).status).toBe('succeeded');
     // Isolated temporary repository fixture; no external path input.
-    expect(fs.readFileSync(path.join(fixture.root, 'marker.txt'), 'utf8')).toBe('approved'); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+    expect(fs.readFileSync(path.join(fixture.root, 'marker.txt'), 'utf8')).toBe('approved'); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
   });
 
   it('shows the approved HTTP destination without disclosing request secrets', async () => {

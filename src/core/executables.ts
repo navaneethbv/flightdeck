@@ -9,7 +9,7 @@ export function findExecutable(binary: string): string | null {
     const candidate = path.join(directory, binary);
     try {
       // eslint-disable-next-line security/detect-non-literal-fs-filename -- Only a fixed executable basename in an absolute operator PATH directory is inspected.
-      if (!fs.statSync(candidate).isFile()) continue; // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+      if (!fs.statSync(candidate).isFile()) continue; // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
     } catch {

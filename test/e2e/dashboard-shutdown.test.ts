@@ -11,9 +11,9 @@ describe('dashboard shutdown', () => {
     try {
       const dir = path.join(fixture.root, '.flightdeck', 'playbooks');
       // Isolated temporary repository fixture; no external path input.
-      fs.mkdirSync(dir, { recursive: true }); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+      fs.mkdirSync(dir, { recursive: true }); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
       // Isolated temporary repository fixture; no external path input.
-      fs.writeFileSync(path.join(dir, 'confirm.yml'), 'name: confirm\nsteps:\n  - id: delete\n    type: mcp\n    tool: note_delete\n    arguments:\n      id: missing\n'); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+      fs.writeFileSync(path.join(dir, 'confirm.yml'), 'name: confirm\nsteps:\n  - id: delete\n    type: mcp\n    tool: note_delete\n    arguments:\n      id: missing\n'); // nosemgrep: javascript_pathtraversal_rule-non-literal-fs-filename
       const script = `
         const { createWebServer } = await import(process.argv[2]);
         const server = createWebServer({ projectRoot: process.argv[1], port: 0 });
