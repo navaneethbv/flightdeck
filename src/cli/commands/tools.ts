@@ -58,7 +58,7 @@ function buildEngine(projectRoot: string): { engine: PlaybookEngine; registry: T
       }
       return null;
     },
-    confirm: promptConfirm,
+    confirm: (prompt, signal) => promptConfirm(prompt, process.stdin, signal),
   };
   return { engine: new PlaybookEngine(services), registry };
 }

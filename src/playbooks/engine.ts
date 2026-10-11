@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import type { TablesStore } from '../tables/store.js';
 import type { NotesStore } from '../notes/store.js';
@@ -25,7 +26,7 @@ export interface EngineServices {
   callMcpTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   runHeadlessPrompt(prompt: string): Promise<{ stdout: string; exitCode: number }>;
   readPlaybook(name: string): Playbook | null;
-  confirm(prompt: string): Promise<boolean>;
+  confirm(prompt: string, signal?: AbortSignal): Promise<boolean>;
   /** Optional caller policy for effects that do not pass through MCP tools. */
   approveExternal?: (kind: 'bash' | 'http' | 'llm', stepId: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<boolean>;
   fromSession?: string | null;
@@ -35,6 +36,7 @@ export interface RunOptions {
   inputs?: Record<string, unknown>;
   depth?: number;
   onProgress?: (stepId: string, result: StepResult) => void;
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -66,7 +68,7 @@ export class PlaybookEngine {
     let ok = true;
 
     for (const step of playbook.steps) {
-      const result = await this.runStep(step, ctx, results, depth);
+      const result = await this.runStep(step, ctx, results, depth, opts.signal);
       results[step.id] = result;
       recordStepContext(ctx, step.id, result);
       this.onProgress?.(step.id, result);
@@ -85,10 +87,12 @@ export class PlaybookEngine {
     step: Step,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    parentSignal?: AbortSignal
   ): Promise<StepResult> {
     const attempt = async (): Promise<StepResult> => {
       const controller = new AbortController();
+      const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
       const timeoutSec = step.timeout;
       const withTimeout = (promise: Promise<StepResult>): Promise<StepResult> => {
         if (timeoutSec === undefined) return promise;
@@ -110,7 +114,7 @@ export class PlaybookEngine {
           );
         });
       };
-      return withTimeout(this.exec(step, ctx, results, depth, controller.signal));
+      return withTimeout(this.exec(step, ctx, results, depth, signal));
     };
 
     const retries = step.retries ?? 0;
@@ -225,13 +229,14 @@ export class PlaybookEngine {
     step: Extract<Step, { type: 'playbook' }>,
     t: (v: unknown) => unknown,
     tl: (v: unknown) => unknown,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const name = String(t(step.name));
     const nested = this.services.readPlaybook(name);
     if (!nested) return { status: 'failed', output: null, error: `playbook "${name}" not found` };
     const nestedInputs = (tl(step.args) as Record<string, unknown> | undefined) ?? {};
-    const nestedResult = await this.run(nested, { inputs: nestedInputs, depth: depth + 1 });
+    const nestedResult = await new PlaybookEngine(this.services).run(nested, { inputs: nestedInputs, depth: depth + 1, signal, onProgress: this.onProgress });
     return nestedResult.ok
       ? { status: 'ok', output: { ok: true, results: nestedResult.results } }
       : { status: 'failed', output: { ok: false, results: nestedResult.results }, error: nestedResult.error };
@@ -242,7 +247,8 @@ export class PlaybookEngine {
     t: (v: unknown) => unknown,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const raw = String(step.if);
     const resolved = String(t(raw));
@@ -251,7 +257,7 @@ export class PlaybookEngine {
     let failed = false;
     let error: string | undefined;
     for (const nested of branch) {
-      const result = await this.runStep(nested, ctx, results, depth);
+      const result = await this.runStep(nested, ctx, results, depth, signal);
       results[nested.id] = result;
       recordStepContext(ctx, nested.id, result);
       this.onProgress?.(nested.id, result);
@@ -273,6 +279,7 @@ export class PlaybookEngine {
     depth: number,
     signal?: AbortSignal
   ): Promise<StepResult> {
+    signal?.throwIfAborted();
     const t = (v: unknown): unknown => resolveTemplate(v, ctx);
     const tl = (v: unknown): unknown => resolveTemplateLoose(v, ctx);
     switch (step.type) {
@@ -291,17 +298,18 @@ export class PlaybookEngine {
       case 'note':
         return this.execNote(step, tl);
       case 'playbook':
-        return this.execPlaybookStep(step, t, tl, depth);
+        return this.execPlaybookStep(step, t, tl, depth, signal);
       case 'wait': {
         const seconds = Number(tl(step.seconds));
-        await sleep(seconds * 1000);
+        await sleep(seconds * 1000, undefined, { signal });
         return { status: 'ok', output: { waited: seconds } };
       }
       case 'condition':
-        return this.execCondition(step, t, ctx, results, depth);
+        return this.execCondition(step, t, ctx, results, depth, signal);
       case 'manual': {
         const prompt = String(t(step.prompt));
-        const confirmed = await this.services.confirm(prompt);
+        const confirmed = await this.services.confirm(prompt, signal);
+        signal?.throwIfAborted();
         return { status: 'ok', output: { confirmed, prompt } };
       }
       case 'parallel': {
@@ -309,7 +317,7 @@ export class PlaybookEngine {
           step.branches.map(async (branch) => {
             const branchOut: StepResult[] = [];
             for (const nested of branch) {
-              const result = await this.runStep(nested, ctx, results, depth);
+              const result = await this.runStep(nested, ctx, results, depth, signal);
               results[nested.id] = result;
               recordStepContext(ctx, nested.id, result);
               this.onProgress?.(nested.id, result);
@@ -430,8 +438,4 @@ function recordStepContext(ctx: TemplateContext, stepId: string, result: StepRes
       ? (result.output as Record<string, unknown>)
       : {}),
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

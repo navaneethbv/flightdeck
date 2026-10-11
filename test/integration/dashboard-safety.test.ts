@@ -179,4 +179,35 @@ steps:
     expect(complete.status).toBe('succeeded');
     expect(notes.list()).toHaveLength(0);
   });
+
+  it('releases an expired manual prompt so another parallel decision can proceed', async () => {
+    const notes = new NotesStore(fixture.root);
+    const note = notes.createNote('Keep', 'Delete only after a fresh approval');
+    playbook('manual-timeout', `name: manual-timeout
+steps:
+  - id: both
+    type: parallel
+    branches:
+      - - id: prompt
+          type: manual
+          prompt: Expiring decision
+          timeout: 0.2
+      - - id: delete
+          type: mcp
+          tool: note_delete
+          arguments:
+            id: ${note.id}
+`);
+    const { runId } = await (await request('/api/toolkit/run', { action: 'manual-timeout' })).json();
+    const route = `/api/toolkit/run/${runId}`;
+    const initial = await (await request(route)).json();
+    expect(initial.confirm.prompt).toBe('Expiring decision');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const next = await (await request(route)).json();
+    expect(next.confirm.prompt).toBe('Run "note_delete"?');
+    expect(notes.list()).toHaveLength(1);
+    expect((await request('/api/toolkit/confirm', { confirmId: initial.confirm.id, operation: initial.confirm.operation, ok: true })).status).toBe(404);
+    await request('/api/toolkit/confirm', { confirmId: next.confirm.id, operation: next.confirm.operation, ok: true });
+    expect(notes.list()).toHaveLength(0);
+  });
 });

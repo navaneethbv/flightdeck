@@ -18,4 +18,22 @@ describe('promptConfirm', () => {
     expect(await promptConfirm('go?', answer(''))).toBe(false);
     expect(await promptConfirm('go?', answer('nope'))).toBe(false);
   });
+
+  it('denies an aborted prompt and removes its input listener', async () => {
+    const input = new PassThrough();
+    const controller = new AbortController();
+    const pending = promptConfirm('go?', input, controller.signal);
+    controller.abort();
+    input.write('y\n');
+    expect(await pending).toBe(false);
+    expect(input.listenerCount('data')).toBe(0);
+    input.end();
+  });
+
+  it('denies a prompt when input closes without an answer', async () => {
+    const input = new PassThrough();
+    const pending = promptConfirm('go?', input);
+    input.end();
+    expect(await pending).toBe(false);
+  });
 });

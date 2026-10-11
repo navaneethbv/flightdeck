@@ -38,4 +38,28 @@ describe('playbook caller approval policy', () => {
       fixture.cleanup();
     }
   });
+
+  it.each([
+    { kind: 'nested playbook', step: 'type: playbook\n    name: child' },
+    { kind: 'condition', step: 'type: condition\n    if: "true"\n    then:\n      - id: child\n        type: playbook\n        name: child' },
+    { kind: 'parallel', step: 'type: parallel\n    branches:\n      - - id: child\n          type: playbook\n          name: child' },
+  ])('does not execute $kind steps after their parent has timed out', async ({ step }) => {
+    const fixture = makeRepo();
+    const notes = new NotesStore(fixture.root);
+    const nested = parsePlaybookYaml('name: child\nsteps:\n  - id: pause\n    type: wait\n    seconds: 0.1\n  - id: write\n    type: note\n    operation: create\n    title: Late write\n    body: forbidden\n');
+    const services: EngineServices = {
+      projectRoot: fixture.root,
+      tables: new TablesStore(fixture.root), notes, messaging: new MessagingStore(fixture.root),
+      callMcpTool: vi.fn(), runHeadlessPrompt: vi.fn(), readPlaybook: () => nested, confirm: async () => false,
+    };
+    try {
+      const parent = parsePlaybookYaml(`name: parent\nsteps:\n  - id: nested\n    ${step}\n    timeout: 0.02\n`);
+      const result = await new PlaybookEngine(services).run(parent);
+      expect(result.ok).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(notes.list()).toHaveLength(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });

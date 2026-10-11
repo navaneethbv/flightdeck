@@ -5,7 +5,8 @@ async function readJson(url, token) {
   if (url.origin !== 'https://api.github.com' && url.origin !== 'https://sonarcloud.io') throw new Error('Unexpected analysis API origin');
   if (token && url.origin !== 'https://api.github.com') throw new Error('GitHub credentials must only be sent to GitHub');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+  // Exact origins are checked above; callers only construct URLs on those fixed hosts.
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) }); // nosemgrep: rules_lgpl_javascript_ssrf_rule-node-ssrf
   if (!response.ok) throw new Error(`Analysis API returned HTTP ${response.status}`);
   return response.json();
 }
@@ -17,14 +18,7 @@ export async function checkSonar({ repository, revision, pullRequest, token, att
   const checksUrl = new URL('https://api.github.com');
   checksUrl.pathname = `/repos/${repository}/commits/${revision}/check-runs`;
   checksUrl.searchParams.set('check_name', 'SonarCloud Code Analysis');
-  let analysis;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const checks = await readJson(checksUrl, token);
-    analysis = checks.check_runs?.find((check) => check.head_sha === revision && check.app?.slug === 'sonarqubecloud');
-    if (analysis?.status === 'completed') break;
-    await setTimeout(intervalMs);
-  }
-  if (analysis?.status !== 'completed') throw new Error('Sonar did not finish analyzing the requested commit before the deadline');
+  const analysis = await waitForAnalysis(checksUrl, revision, token, attempts, intervalMs);
   if (analysis.conclusion !== 'success') throw new Error(`Sonar analysis concluded ${analysis.conclusion}`);
   if (analysis.output?.annotations_count !== 0) throw new Error('Sonar reported new issue annotations');
 
@@ -38,12 +32,21 @@ export async function checkSonar({ repository, revision, pullRequest, token, att
   if (hotspots.paging?.total !== 0) throw new Error(`Sonar has ${hotspots.paging?.total ?? 'unknown'} security hotspots awaiting review`);
 }
 
+async function waitForAnalysis(url, revision, token, remaining, intervalMs) {
+  const checks = await readJson(url, token);
+  const analysis = checks.check_runs?.find((check) => check.head_sha === revision && check.app?.slug === 'sonarqubecloud');
+  if (analysis?.status === 'completed') return analysis;
+  if (remaining <= 1) throw new Error('Sonar did not finish analyzing the requested commit before the deadline');
+  await setTimeout(intervalMs);
+  return waitForAnalysis(url, revision, token, remaining - 1, intervalMs);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     await checkSonar({ repository: process.env.GITHUB_REPOSITORY, revision: process.env.PR_HEAD_SHA, pullRequest: process.env.PR_NUMBER, token: process.env.GH_TOKEN });
     console.log('Sonar: zero new issues and no security hotspots awaiting review.');
   } catch (error) {
-    console.error(error instanceof Error ? error.message : 'Sonar verification failed');
+    console.error(JSON.stringify(error instanceof Error ? error.message : 'Sonar verification failed'));
     process.exitCode = 1;
   }
 }

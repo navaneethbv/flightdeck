@@ -282,7 +282,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
           return { stdout: out.stdout ?? out.stderr ?? '', exitCode: out.status ?? -1 };
         },
         readPlaybook: (name) => readNamedPlaybook(projectRoot, name),
-        confirm: (prompt) => requestConfirm(prompt, `manual:${prompt}`),
+        confirm: (prompt, signal) => requestConfirm(prompt, `manual:${prompt}`, signal),
       };
       const engine = new PlaybookEngine(services);
       const result = await engine.run(playbook, { inputs });

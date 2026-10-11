@@ -42,6 +42,7 @@ Submit `{ confirmId, operation, ok }` to `POST /api/toolkit/confirm`.
 Only `ok: true` approves; mismatched operations return `400` and consumed or expired challenges return `404`.
 Unanswered prompts expire after five minutes.
 Server shutdown denies outstanding and queued prompts.
+Step timeouts cancel nested work and manual prompts, preventing later steps from starting after a parent has expired.
 
 The session panel provides named buttons to inspect logs and stop running sessions after confirmation.
 Stopping uses the existing `POST /api/sessions/<id>/stop` operation and the same session manager as `deck session stop`.

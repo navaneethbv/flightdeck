@@ -8,7 +8,7 @@ const clean = { head_sha: revision, app: { slug: 'sonarqubecloud' }, status: 'co
 afterEach(() => { vi.unstubAllGlobals(); });
 
 function api(check = clean, issues: unknown = { total: 0 }, hotspots: unknown = { paging: { total: 0 } }) {
-  const fetcher = vi.fn(async (url: URL) => {
+  const fetcher = vi.fn(async (url: URL, _init?: RequestInit) => {
     if (url.hostname === 'api.github.com') return Response.json({ check_runs: [check] });
     if (url.pathname === '/api/issues/search') return Response.json(issues);
     return Response.json(hotspots);
@@ -22,6 +22,10 @@ describe('Sonar merge gate', () => {
     const fetcher = api();
     await expect(checkSonar(config)).resolves.toBeUndefined();
     expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher.mock.calls.map(([url]) => url.origin)).toEqual(['https://api.github.com', 'https://sonarcloud.io', 'https://sonarcloud.io']);
+    expect(fetcher.mock.calls[0][1]?.headers).toEqual({ Authorization: 'Bearer test-token' });
+    expect(fetcher.mock.calls[1][1]?.headers).toEqual({});
+    expect(fetcher.mock.calls[2][1]?.headers).toEqual({});
   });
 
   it('waits for the latest analysis instead of accepting an earlier successful retry', async () => {
