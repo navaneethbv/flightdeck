@@ -4,6 +4,7 @@ import path from 'node:path';
 import { normalizeProjectRoot, worktreesDir, hooksDir, notesDir, playbooksDir } from './paths.js';
 import { getDb, now } from './state.js';
 import { ensureFlightdeckDirIgnored } from '../worktrees/manager.js';
+import { requireExecutable } from './executables.js';
 
 export interface RepairResult {
   ok: boolean;
@@ -64,7 +65,7 @@ function repairSessions(root: string, fixed: string[], warnings: string[]): void
 
 function repairWorktrees(root: string, fixed: string[]): void {
   try {
-    const pruneRes = spawnSync('git', ['-C', root, 'worktree', 'prune'], { encoding: 'utf8' });
+    const pruneRes = spawnSync(requireExecutable('git'), ['-C', root, 'worktree', 'prune'], { encoding: 'utf8' });
     if (pruneRes.status === 0) {
       fixed.push('pruned stale git worktree references');
     }

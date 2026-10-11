@@ -6,6 +6,7 @@ import { gitVersion } from '../../worktrees/manager.js';
 import { spawnSync } from 'node:child_process';
 import { printJson, handleError, projectRootOf } from '../util.js';
 import { repairProject } from '../../core/repair.js';
+import { findExecutable } from '../../core/executables.js';
 
 type Opts = Record<string, string | boolean | undefined>;
 
@@ -15,10 +16,9 @@ type Opts = Record<string, string | boolean | undefined>;
  * tmux is reported as not usable rather than silently downgraded.
  */
 function tmuxCheck(): { name: string; ok: boolean; detail: string } {
-  // tmux is resolved through PATH by convention, and the argv is fixed, so
-  // this is not attacker-controlled input.
-  const result = spawnSync('tmux', ['-V'], { encoding: 'utf8' }); // NOSONAR: S4036
-  if (result.status !== 0 || !result.stdout) {
+  const binary = findExecutable('tmux');
+  const result = binary ? spawnSync(binary, ['-V'], { encoding: 'utf8' }) : null;
+  if (!result || result.status !== 0 || !result.stdout) {
     return { name: 'tmux', ok: false, detail: 'not installed (only `deck fleet` needs it)' };
   }
   const version = result.stdout.trim();
@@ -47,8 +47,9 @@ function runDoctorChecks(root: string): { name: string; ok: boolean; detail: str
     }
   }
   checks.push(tmuxCheck());
-  const repo = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
-  const isRepo = repo.status === 0;
+  const gitPath = findExecutable('git');
+  const repo = gitPath ? spawnSync(gitPath, ['-C', root, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }) : null;
+  const isRepo = repo?.status === 0;
   checks.push({ name: 'git-repo', ok: isRepo, detail: isRepo ? root : 'current directory is not a git repo' });
   return checks;
 }

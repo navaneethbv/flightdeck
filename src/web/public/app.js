@@ -924,12 +924,18 @@ function openLogsModal(id, title) {
   const term = el('logs-terminal-view');
   if (titleElem) titleElem.textContent = `Logs: ${title || id}`;
   if (term) term.textContent = 'Loading...';
-  el('modal-logs')?.classList.remove('hidden');
+  const dialog = el('modal-logs');
+  dialog.classList.remove('hidden');
+  if (!dialog.open) dialog.showModal();
   el('btn-close-logs')?.focus();
   loadLogs(id);
 }
 
 function closeLogsModal() {
+  el('modal-logs')?.close();
+}
+
+function restoreLogsFocus() {
   el('modal-logs')?.classList.add('hidden');
   if (logsOpener?.isConnected) {
     logsOpener.focus();
@@ -937,24 +943,6 @@ function closeLogsModal() {
     const cards = el('sessions-container')?.querySelectorAll('.session-card') ?? [];
     const card = [...cards].find((item) => item.dataset.id === activeSessionIdForLogs);
     card?.querySelector('[data-session-action="logs"]')?.focus();
-  }
-}
-
-function logsKeyboard(event) {
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    closeLogsModal();
-  } else if (event.key === 'Tab') {
-    const buttons = [...el('modal-logs').querySelectorAll('button:not([disabled])')];
-    const first = buttons[0];
-    const last = buttons.at(-1);
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last?.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first?.focus();
-    }
   }
 }
 
@@ -994,7 +982,7 @@ function setupEventHandlers() {
     ['btn-close-new-session', 'btn-cancel-new-session']
   );
   for (const id of ['btn-close-logs', 'btn-dismiss-logs']) el(id)?.addEventListener('click', closeLogsModal);
-  el('modal-logs')?.addEventListener('keydown', logsKeyboard);
+  el('modal-logs')?.addEventListener('close', restoreLogsFocus);
 
   el('btn-refresh-logs')?.addEventListener('click', () => {
     if (activeSessionIdForLogs) loadLogs(activeSessionIdForLogs);

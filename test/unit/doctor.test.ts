@@ -47,8 +47,10 @@ describe('deck doctor', () => {
   it.each([{ args: [] }, { args: ['--json'] }])('reports unsuccessful repair through its exit status: $args', ({ args }) => {
     const fixture = makeRepo();
     try {
-      fs.mkdirSync(path.join(fixture.root, '.flightdeck'));
-      fs.writeFileSync(path.join(fixture.root, '.flightdeck', 'state.db'), 'not a sqlite database');
+      // Disposable corrupt database fixture under makeRepo, not a user-selected file.
+      fs.mkdirSync(path.join(fixture.root, '.flightdeck')); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
+      // Disposable corrupt database fixture under makeRepo, not a user-selected file.
+      fs.writeFileSync(path.join(fixture.root, '.flightdeck', 'state.db'), 'not a sqlite database'); // nosemgrep: javascript.pathtraversal.rule-non-literal-fs-filename
       const result = runCli(['repair', ...args], { cwd: fixture.root });
       expect(result.code).toBe(1);
       expect(result.stdout).toContain('database check failed');

@@ -7,6 +7,7 @@ import type { Step, Playbook, StepResult } from './types.js';
 import { resolveTemplate, resolveTemplateLoose, type TemplateContext } from './templating.js';
 import { evaluateExpression } from './expression.js';
 import { resolveSecret } from '../secrets/keychain.js';
+import { resolveHttpDestination } from './http.js';
 
 export const MAX_PLAYBOOK_DEPTH = 10;
 
@@ -173,7 +174,7 @@ export class PlaybookEngine {
     tl: (v: unknown) => unknown,
     signal?: AbortSignal
   ): Promise<StepResult> {
-    const url = String(t(step.url));
+    const url = resolveHttpDestination(step, String(t(step.url)));
     const headers = (tl(step.headers) as Record<string, string> | undefined) ?? undefined;
     const body = step.body === undefined ? undefined : tl(step.body);
     let reqBody: string | undefined;
@@ -182,18 +183,19 @@ export class PlaybookEngine {
     } else if (body !== undefined) {
       reqBody = JSON.stringify(body);
     }
-    await this.approveExternal('http', step.id, { url, method: step.method, headers, body: reqBody }, signal);
+    await this.approveExternal('http', step.id, { url: url.href, origin: url.origin, method: step.method, headers, body: reqBody }, signal);
     const res = await fetch(url, {
       method: step.method,
       headers,
       body: reqBody,
+      redirect: 'error',
       signal,
     });
     const text = await res.text();
     const output = { status: res.status, body: text, headers: Object.fromEntries(res.headers) };
     return res.ok
       ? { status: 'ok', output }
-      : { status: 'failed', output, error: `http ${res.status} from ${url}` };
+      : { status: 'failed', output, error: `http ${res.status} from ${url.origin}` };
   }
 
   private async execMcp(

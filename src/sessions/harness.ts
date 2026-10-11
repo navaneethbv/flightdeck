@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cliEntryPath } from '../core/cliEntry.js';
 import { loadConfig } from '../core/config.js';
+import { findExecutable } from '../core/executables.js';
 import type { HarnessKind, Session } from '../core/types.js';
 import {
   parseClaudeLine,
@@ -60,32 +60,8 @@ export interface HarnessAdapter {
   detectRateLimit?(output: string): number | null;
 }
 
-/**
- * Whether `binary` resolves through PATH. The `which` command is tried first
- * for exact OS semantics; when PATH is trimmed so hard that `which` itself is
- * not resolvable (isolated tests, minimal containers), a direct scan of each
- * PATH entry for an executable file stands in.
- */
 function which(binary: string): boolean {
-  try {
-    execFileSync('which', [binary], { stdio: 'pipe' });
-    return true;
-  } catch {
-    // `which` missing or it reported not found; scan PATH below.
-  }
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    try {
-      const candidate = path.join(dir, binary);
-      const stat = fs.statSync(candidate);
-      if (!stat.isFile()) continue;
-      if (process.platform !== 'win32' && (stat.mode & 0o111) === 0) continue;
-      return true;
-    } catch {
-      // keep scanning
-    }
-  }
-  return false;
+  return findExecutable(binary) !== null;
 }
 
 function mcpServerArgs(session: Session, extraEnv?: Record<string, string>): { command: string; args: string[]; env: Record<string, string> } {

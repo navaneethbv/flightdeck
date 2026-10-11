@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getDb, now } from '../core/state.js';
 import type { DatabaseSync } from 'node:sqlite';
+import { findExecutable, requireExecutable } from '../core/executables.js';
 
 export interface SshHost {
   name: string;
@@ -68,45 +69,43 @@ export class SshStore {
   }
 
   async run(host: SshHost, command: string): Promise<{ stdout: string; exitCode: number }> {
-    const target = this.buildTarget(host);
     const sshArgs: string[] = [];
     if (host.auth === 'key') {
       if (!host.keyFile) throw new Error(`host "${host.name}" has no key file configured`);
       if (!fs.existsSync(host.keyFile)) throw new Error(`key file not found: ${host.keyFile}`);
       sshArgs.push('-i', host.keyFile);
     }
-    if (host.auth === 'password') {
-      try {
-        execFileSync('which', ['sshpass']);
-      } catch {
-        throw new Error('password auth requires sshpass on PATH');
-      }
-      const passArgs = ['-e', 'ssh', ...sshArgs, ...target.split(' '), command];
-      const out = await new Promise<{ stdout: string; exitCode: number }>((resolve) => {
-        const child = spawn('sshpass', passArgs, {
-          env: { ...process.env, SSHPASS: process.env.FLIGHTDECK_SSH_PASSWORD ?? '' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        let stdout = '';
-        child.stdout.on('data', (d) => (stdout += d));
-        child.stderr.on('data', () => undefined);
-        child.on('exit', (code) => resolve({ stdout, exitCode: code ?? -1 }));
-      });
-      return out;
+    if (host.port !== null) {
+      if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) throw new Error('Invalid SSH port');
+      sshArgs.push('-p', String(host.port));
     }
-    return new Promise((resolve) => {
-      const child = spawn('ssh', [...sshArgs, ...target.split(' '), command], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const target = host.user ? `${host.user}@${host.host}` : host.host;
+    sshArgs.push('--', target, command);
+    let binary = requireExecutable('ssh');
+    let args = sshArgs;
+    if (host.auth === 'password') {
+      const sshpass = findExecutable('sshpass');
+      if (!sshpass) throw new Error('password auth requires sshpass on PATH');
+      args = ['-e', binary, ...sshArgs];
+      binary = sshpass;
+    }
+    return new Promise((resolve, reject) => {
+      const child = spawn(binary, args, {
+        env: host.auth === 'password' ? { ...process.env, SSHPASS: process.env.FLIGHTDECK_SSH_PASSWORD ?? '' } : process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       let stdout = '';
-      child.stdout.on('data', (d) => (stdout += d));
-      child.stderr.on('data', (d) => (stdout += d));
-      child.on('exit', (code) => resolve({ stdout, exitCode: code ?? -1 }));
+      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { stdout += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => { resolve({ stdout, exitCode: code ?? -1 }); });
     });
   }
 }
 
 export function sshVersion(): string {
   try {
-    return execFileSync('ssh', ['-V'], { stdio: 'pipe' }).toString();
+    return execFileSync(requireExecutable('ssh'), ['-V'], { stdio: 'pipe' }).toString();
   } catch {
     return 'not found';
   }

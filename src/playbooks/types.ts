@@ -26,6 +26,8 @@ export interface HttpStep extends BaseStep {
   type: 'http';
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   url: string;
+  /** Literal destination origins from the playbook, never template-resolved. */
+  allowedOrigins?: string[];
   headers?: Record<string, string>;
   body?: unknown;
 }

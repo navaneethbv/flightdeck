@@ -34,7 +34,7 @@ export async function readBody(req: IncomingMessage): Promise<Record<string, unk
         reject(new RequestError(400, 'Request body must be valid JSON'));
       }
     });
-    req.on('aborted', () => reject(new RequestError(400, 'Request body was interrupted')));
+    req.on('aborted', () => { reject(new RequestError(400, 'Request body was interrupted')); });
     req.on('error', reject);
   });
   if (!isRecord(value)) throw new RequestError(400, 'Request body must be an object');

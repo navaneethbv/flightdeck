@@ -26,7 +26,8 @@ import { spawnSync } from 'node:child_process';
 import type { Argus, Session } from '../core/types.js';
 import { handleWorkspaceRequest } from './workspace.js';
 import { readBody, RequestError } from './request-body.js';
-import { readDashboardPlaybook } from './playbooks.js';
+import { readNamedPlaybook } from '../playbooks/library.js';
+import { ConfirmationQueue, type ConfirmationRun } from './confirmations.js';
 
 /**
  * How long a dashboard confirmation prompt stays open before the run fails
@@ -81,28 +82,14 @@ export interface WebServerOptions {
   confirmTimeoutMs?: number;
 }
 
-interface PendingConfirmation {
-  runId: string;
-  prompt: string;
-  /** The exact operation this challenge was issued for; a confirm must match it. */
-  operation: string;
-  timer: NodeJS.Timeout;
-  resolve: (approved: boolean) => void;
-}
-
-interface PendingRun {
-  id: string;
-  status: 'running' | 'succeeded' | 'failed' | 'awaiting_confirmation';
+interface PendingRun extends ConfirmationRun {
   result?: RunResult;
   error?: string;
-  confirmId?: string;
-  confirmPrompt?: string;
-  confirmOperation?: string;
 }
 
 /** Stable identity for a tool invocation, binding a confirm to tool + args. */
 function operationForTool(tool: string, args: Record<string, unknown>): string {
-  const digest = createHash('sha256').update(JSON.stringify(args ?? {})).digest('hex');
+  const digest = createHash('sha256').update(JSON.stringify(args)).digest('hex');
   return `tool:${tool}:${digest}`;
 }
 
@@ -126,9 +113,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
   // token from the URL fragment. It is printed with the URL at startup.
   const capabilityToken = randomUUID();
   const pendingRuns = new Map<string, PendingRun>();
-  const pendingConfirms = new Map<string, PendingConfirmation>();
-  const confirmTimeoutMs = opts.confirmTimeoutMs ?? CONFIRM_TIMEOUT_MS;
-  let stopping = false;
+  const confirmations = new ConfirmationQueue(opts.confirmTimeoutMs ?? CONFIRM_TIMEOUT_MS, broadcastUpdate);
 
   /**
    * The token travels in the X-Flightdeck-Token header on every /api/* call.
@@ -144,46 +129,6 @@ export function createWebServer(opts: WebServerOptions = {}): {
       return url.searchParams.get('token') === capabilityToken;
     }
     return false;
-  }
-
-  /**
-   * A confirm that suspends the run until the browser client posts a decision
-   * for the minted confirm id, bound to the exact operation it was issued for.
-   * A run never auto-confirms: a timeout or a denied request resolves false
-   * and the step fails. Each challenge is single-use and expires.
-   */
-  function makeConfirmRequester(run: PendingRun): (prompt: string, operation: string, signal?: AbortSignal) => Promise<boolean> {
-    let previous = Promise.resolve();
-    return (prompt: string, operation: string, signal?: AbortSignal) => {
-      const decision = previous.then(() => {
-        if (stopping || signal?.aborted || run.status === 'failed' || run.status === 'succeeded') return false;
-        return new Promise<boolean>((resolve) => {
-          const confirmId = randomUUID();
-          const finish = (approved: boolean) => {
-            const active = run.status === 'awaiting_confirmation' && !stopping && !signal?.aborted;
-            clearTimeout(timer);
-            signal?.removeEventListener('abort', abort);
-            pendingConfirms.delete(confirmId);
-            if (run.status === 'awaiting_confirmation') run.status = 'running';
-            run.confirmId = undefined;
-            run.confirmPrompt = undefined;
-            run.confirmOperation = undefined;
-            resolve(approved && active);
-          };
-          const abort = () => finish(false);
-          const timer = setTimeout(() => finish(false), confirmTimeoutMs);
-          signal?.addEventListener('abort', abort, { once: true });
-          pendingConfirms.set(confirmId, { runId: run.id, prompt, operation, timer, resolve: finish });
-          run.status = 'awaiting_confirmation';
-          run.confirmId = confirmId;
-          run.confirmPrompt = prompt;
-          run.confirmOperation = operation;
-          broadcastUpdate();
-        });
-      });
-      previous = decision.then(() => undefined);
-      return decision;
-    };
   }
 
   function broadcastUpdate(): void {
@@ -294,7 +239,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     playbook: Playbook,
     inputs: Record<string, unknown> | undefined
   ): Promise<void> {
-    const requestConfirm = makeConfirmRequester(run);
+    const requestConfirm = confirmations.requester(run);
     try {
       const ctx: McpContext = {
         projectRoot,
@@ -311,7 +256,9 @@ export function createWebServer(opts: WebServerOptions = {}): {
         notes: new NotesStore(projectRoot),
         messaging: new MessagingStore(projectRoot),
         approveExternal: (kind, stepId, args, signal) => requestConfirm(
-          `Run ${kind} step "${stepId}" in playbook "${playbook.name}"? This can execute commands or make external requests.`,
+          kind === 'http'
+            ? `Allow ${String(args.method)} request to ${String(args.origin)} for step "${stepId}"?`
+            : `Run ${kind} step "${stepId}" in playbook "${playbook.name}"? This can execute commands or make external requests.`,
           operationForTool(`step:${kind}`, { stepId, ...args }),
           signal
         ),
@@ -334,7 +281,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
           });
           return { stdout: out.stdout ?? out.stderr ?? '', exitCode: out.status ?? -1 };
         },
-        readPlaybook: (name) => readDashboardPlaybook(projectRoot, name),
+        readPlaybook: (name) => readNamedPlaybook(projectRoot, name),
         confirm: (prompt) => requestConfirm(prompt, `manual:${prompt}`),
       };
       const engine = new PlaybookEngine(services);
@@ -346,12 +293,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
       run.status = 'failed';
       run.error = (err as Error).message;
     } finally {
-      for (const pending of pendingConfirms.values()) {
-        if (pending.runId === run.id) pending.resolve(false);
-      }
-      run.confirmId = undefined;
-      run.confirmPrompt = undefined;
-      run.confirmOperation = undefined;
+      confirmations.denyRun(run.id);
       broadcastUpdate();
     }
   }
@@ -666,7 +608,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
       try {
         const body = await readBody(req);
         const name = String(body.action);
-        const playbook = readDashboardPlaybook(projectRoot, name);
+        const playbook = readNamedPlaybook(projectRoot, name);
         if (!playbook) throw new Error(`playbook "${name}" not found`);
         const runId = randomUUID();
         const run: PendingRun = { id: runId, status: 'running' };
@@ -707,17 +649,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
         const body = await readBody(req);
         const confirmId = typeof body.confirmId === 'string' ? body.confirmId : '';
         const operation = typeof body.operation === 'string' ? body.operation : '';
-        const pending = pendingConfirms.get(confirmId);
-        if (!pending) {
-          sendError(res, 404, `no pending confirmation "${confirmId}"`);
-          return;
-        }
-        if (pending.operation !== operation) {
-          sendError(res, 400, 'confirmation does not match the pending operation');
-          return;
-        }
         const approved = body.ok === true;
-        pending.resolve(approved);
+        confirmations.decide(confirmId, operation, approved);
         sendJson(res, 200, { confirmed: approved });
       } catch (err) {
         sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
@@ -748,8 +681,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
       }),
     stop: () =>
       new Promise<void>((resolve) => {
-        stopping = true;
-        for (const pending of pendingConfirms.values()) pending.resolve(false);
+        confirmations.stop();
         for (const client of sseClients) {
           try {
             client.end();

@@ -1,6 +1,7 @@
 import YAML from 'yaml';
 import fs from 'node:fs';
 import type { Playbook, Step } from './types.js';
+import { parseHttpOrigins } from './http.js';
 
 export function parsePlaybookYaml(raw: string, sourceName = 'playbook'): Playbook {
   let data: unknown;
@@ -63,6 +64,7 @@ function parseHttpStep(s: Record<string, unknown>, id: string, base: StepBase): 
     type: 'http',
     method: rawMethod as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     url: String(s.url),
+    allowedOrigins: parseHttpOrigins(s.allowed_origins),
     headers: optMap(s.headers) as Record<string, string> | undefined,
     body: s.body,
   };

@@ -11,7 +11,7 @@ import { MessagingStore } from '../messaging/store.js';
 import { SshStore } from '../ssh/hosts.js';
 import { Integrations } from '../integrations/index.js';
 import { PlaybookEngine, type EngineServices } from '../playbooks/engine.js';
-import { parsePlaybookYaml } from '../playbooks/parser.js';
+import { readNamedPlaybook, saveNamedPlaybook } from '../playbooks/library.js';
 import type { Playbook } from '../playbooks/types.js';
 import { playbooksDir, globalPlaybooksDir } from '../core/paths.js';
 import { getDefaultHarness } from '../core/config.js';
@@ -884,10 +884,7 @@ export class ToolRegistry {
       risk: 'additive',
       handler: async (args) => {
         const name = String(args.name);
-        parsePlaybookYaml(String(args.content), name);
-        const dir = playbooksDir(s.projectRoot);
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, `${name}.yml`), String(args.content));
+        saveNamedPlaybook(s.projectRoot, name, String(args.content));
         return { saved: name };
       },
     });
@@ -926,14 +923,7 @@ export class ToolRegistry {
   }
 
   private readPlaybook(name: string): Playbook | null {
-    const candidates = [
-      path.join(playbooksDir(this.ctx.projectRoot), `${name}.yml`),
-      path.join(globalPlaybooksDir, `${name}.yml`),
-    ];
-    for (const file of candidates) {
-      if (fs.existsSync(file)) return parsePlaybookYaml(fs.readFileSync(file, 'utf8'), name);
-    }
-    return null;
+    return readNamedPlaybook(this.ctx.projectRoot, name);
   }
 
   private engineServices(): EngineServices {

@@ -7,7 +7,7 @@ function envName(name: string): string {
 }
 
 function keychainSet(account: string, value: string): void {
-  execFileSync('security', [
+  execFileSync('/usr/bin/security', [
     'add-generic-password',
     '-a',
     account,
@@ -21,7 +21,7 @@ function keychainSet(account: string, value: string): void {
 
 function keychainGet(account: string): string | null {
   try {
-    const out = execFileSync('security', [
+    const out = execFileSync('/usr/bin/security', [
       'find-generic-password',
       '-a',
       account,
@@ -37,7 +37,7 @@ function keychainGet(account: string): string | null {
 
 function keychainDelete(account: string): void {
   try {
-    execFileSync('security', ['delete-generic-password', '-a', account, '-s', SERVICE]);
+    execFileSync('/usr/bin/security', ['delete-generic-password', '-a', account, '-s', SERVICE]);
   } catch {
     // already absent
   }
@@ -77,7 +77,7 @@ export function resolveSecret(name: string): string {
 export function secretNames(): string[] {
   if (!isMac()) return [];
   try {
-    const out = execFileSync('security', ['dump-keychain', '-s', SERVICE]).toString();
+    const out = execFileSync('/usr/bin/security', ['dump-keychain', '-s', SERVICE]).toString();
     const names: string[] = [];
     for (const line of out.split('\n')) {
       const m = line.match(/"acct"<blob>=(?:0x[0-9a-fA-F]+\s+)?"?([^"\r\n]+)"?/);
