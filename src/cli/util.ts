@@ -10,13 +10,21 @@ import { normalizeProjectRoot } from '../core/paths.js';
  */
 export function promptConfirm(
   prompt: string,
-  input: NodeJS.ReadableStream = process.stdin
+  input: NodeJS.ReadableStream = process.stdin,
+  signal?: AbortSignal
 ): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input, output: process.stderr });
+    const abort = () => { rl.close(); };
+    signal?.addEventListener('abort', abort, { once: true });
+    rl.once('close', () => {
+      signal?.removeEventListener('abort', abort);
+      resolve(false);
+    });
     rl.question(`${prompt} [y/N] `, (answer) => {
+      resolve(!signal?.aborted && answer.trim().toLowerCase().startsWith('y'));
       rl.close();
-      resolve(answer.trim().toLowerCase().startsWith('y'));
     });
   });
 }

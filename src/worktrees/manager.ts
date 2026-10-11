@@ -1,3 +1,4 @@
+import { requireExecutable } from '../core/executables.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,7 @@ export interface WorktreeInfo {
 }
 
 export function assertGitRepo(projectRoot: string): void {
-  const result = spawnSync('git', ['-C', projectRoot, 'rev-parse', '--is-inside-work-tree'], {
+  const result = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'rev-parse', '--is-inside-work-tree'], {
     encoding: 'utf8',
   });
   if (result.status !== 0) {
@@ -27,7 +28,7 @@ export function createWorktree(projectRoot: string, name: string, sessionId?: st
   fs.mkdirSync(worktreesDir(projectRoot), { recursive: true });
   const branch = `flightdeck/${name}`;
   const result = spawnSync(
-    'git',
+    requireExecutable('git'),
     ['-C', projectRoot, 'worktree', 'add', '-b', branch, dir],
     { encoding: 'utf8' }
   );
@@ -70,7 +71,7 @@ function finalizeWorktreeEntry(
 
 export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   assertGitRepo(projectRoot);
-  const result = spawnSync('git', ['-C', projectRoot, 'worktree', 'list', '--porcelain'], {
+  const result = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'worktree', 'list', '--porcelain'], {
     encoding: 'utf8',
   });
   if (result.status !== 0) throw new Error(`git worktree list failed: ${result.stderr?.trim() || result.error?.message || 'unknown Git error'}`);
@@ -97,7 +98,7 @@ export function removeWorktree(projectRoot: string, name: string): void {
   if (!fs.existsSync(dir)) {
     throw new Error(`worktree "${name}" does not exist`);
   }
-  const result = spawnSync('git', ['-C', projectRoot, 'worktree', 'remove', dir], { encoding: 'utf8' });
+  const result = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'worktree', 'remove', dir], { encoding: 'utf8' });
   if (result.status !== 0) {
     throw new Error(`git worktree remove failed: ${result.stderr?.trim() || result.stdout?.trim()}`);
   }
@@ -147,7 +148,7 @@ export function ensureFlightdeckDirIgnored(projectRoot: string): void {
 function inspectGit(dir: string, args: string[]): string {
   // This local CLI uses the operator's installed Git, like the other worktree commands.
   // HTTP inputs cannot set PATH or the executable; no shell is involved.
-  const result = spawnSync('git', ['-C', dir, ...args], { // NOSONAR: S4036, operator-owned PATH is the CLI trust boundary.
+  const result = spawnSync(requireExecutable('git'), ['-C', dir, ...args], {
     encoding: 'utf8',
     timeout: 10_000,
     maxBuffer: 1024 * 1024,
@@ -160,10 +161,10 @@ function inspectGit(dir: string, args: string[]): string {
 
 function defaultBase(projectRoot: string): string {
   // Resolve through the same operator-owned PATH as every other worktree command.
-  const remote = spawnSync('git', ['-C', projectRoot, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }); // NOSONAR: S4036
+  const remote = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
   if (remote.status === 0) return remote.stdout.trim();
   for (const branch of ['main', 'master']) {
-    const result = spawnSync('git', ['-C', projectRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+    const result = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
     if (result.status === 0) return branch;
   }
   return inspectGit(projectRoot, ['symbolic-ref', '--short', 'HEAD']).trim();
@@ -240,7 +241,7 @@ export function worktreeMerge(
   const branch = `flightdeck/${name}`;
 
   if (opts.dryRun) {
-    const res = spawnSync('git', ['-C', projectRoot, 'merge-tree', '--write-tree', target, branch], {
+    const res = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'merge-tree', '--write-tree', target, branch], {
       encoding: 'utf8',
     });
     return {
@@ -249,12 +250,12 @@ export function worktreeMerge(
     };
   }
 
-  const checkoutRes = spawnSync('git', ['-C', projectRoot, 'checkout', target], { encoding: 'utf8' });
+  const checkoutRes = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'checkout', target], { encoding: 'utf8' });
   if (checkoutRes.status !== 0) {
     throw new Error(`Failed to checkout target branch "${target}": ${checkoutRes.stderr}`);
   }
 
-  const mergeRes = spawnSync('git', ['-C', projectRoot, 'merge', '--no-ff', '-m', `Merge worktree ${name}`, branch], {
+  const mergeRes = spawnSync(requireExecutable('git'), ['-C', projectRoot, 'merge', '--no-ff', '-m', `Merge worktree ${name}`, branch], {
     encoding: 'utf8',
   });
 
@@ -266,7 +267,7 @@ export function worktreeMerge(
 
 export function gitVersion(): string {
   try {
-    return execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
+    return execFileSync(requireExecutable('git'), ['--version'], { encoding: 'utf8' }).trim();
   } catch {
     return 'not found';
   }

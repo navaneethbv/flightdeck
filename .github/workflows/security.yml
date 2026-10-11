@@ -13,6 +13,26 @@ permissions:
   contents: read
 
 jobs:
+  sonar-zero-issues:
+    name: sonar-zero-issues
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Require no new Sonar issues or unresolved security hotspots
+        run: node scripts/check-sonar.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
   # Diffs the dependency manifest and blocks PRs that pull in vulnerable or
   # badly-licensed packages. Only meaningful on pull_request events.
   dependency-review:

@@ -73,13 +73,13 @@ describe('Secrets & Keychain Subsystem', () => {
     });
 
     setSecret('my_key', 'val');
-    expect(execMock).toHaveBeenCalledWith('security', expect.arrayContaining(['add-generic-password', '-a', 'secret:my_key', '-w', 'val']));
+    expect(execMock).toHaveBeenCalledWith('/usr/bin/security', expect.arrayContaining(['add-generic-password', '-a', 'secret:my_key', '-w', 'val']));
 
     expect(getSecret('my_key')).toBe('keychain-val');
-    expect(execMock).toHaveBeenCalledWith('security', expect.arrayContaining(['find-generic-password', '-a', 'secret:my_key']));
+    expect(execMock).toHaveBeenCalledWith('/usr/bin/security', expect.arrayContaining(['find-generic-password', '-a', 'secret:my_key']));
 
     deleteSecret('my_key');
-    expect(execMock).toHaveBeenCalledWith('security', expect.arrayContaining(['delete-generic-password', '-a', 'secret:my_key']));
+    expect(execMock).toHaveBeenCalledWith('/usr/bin/security', expect.arrayContaining(['delete-generic-password', '-a', 'secret:my_key']));
 
     const names = secretNames();
     expect(names).toEqual(['alpha']);

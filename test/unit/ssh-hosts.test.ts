@@ -4,6 +4,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import * as childProcess from 'node:child_process';
 import { SshStore, type SshHost } from '../../src/ssh/hosts.js';
+import * as executables from '../../src/core/executables.js';
 import { makeRepo } from '../helpers.js';
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -80,7 +81,7 @@ describe('SshStore', () => {
     const spawnMock = vi.mocked(childProcess.spawn).mockImplementation(() => {
       setTimeout(() => {
         fakeChild.stdout.emit('data', 'hello remote');
-        fakeChild.emit('exit', 0);
+        fakeChild.emit('close', 0);
       }, 5);
       return fakeChild;
     });
@@ -97,7 +98,7 @@ describe('SshStore', () => {
     const res = await store.run(host, 'uptime');
     expect(res.stdout).toBe('hello remote');
     expect(res.exitCode).toBe(0);
-    expect(spawnMock).toHaveBeenCalledWith('ssh', ['user@remote.test', 'uptime'], expect.anything());
+    expect(spawnMock).toHaveBeenCalledWith(expect.stringMatching(/\/ssh$/), ['--', 'user@remote.test', 'uptime'], expect.anything());
   });
 
   it('handles key auth validation and run', async () => {
@@ -131,7 +132,7 @@ describe('SshStore', () => {
     vi.mocked(childProcess.spawn).mockImplementation(() => {
       setTimeout(() => {
         fakeChild.stdout.emit('data', 'key ok');
-        fakeChild.emit('exit', 0);
+        fakeChild.emit('close', 0);
       }, 5);
       return fakeChild;
     });
@@ -152,20 +153,19 @@ describe('SshStore', () => {
       createdAt: 0,
     };
 
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error('not found');
-    });
+    const lookup = vi.spyOn(executables, 'findExecutable');
+    lookup.mockReturnValue(null);
 
     await expect(store.run(hostPass, 'uptime')).rejects.toThrow(/password auth requires sshpass/);
 
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from('/usr/bin/sshpass'));
+    lookup.mockReturnValue('/usr/local/bin/sshpass');
     const fakeChild = new EventEmitter() as any;
     fakeChild.stdout = new EventEmitter();
     fakeChild.stderr = new EventEmitter();
     vi.mocked(childProcess.spawn).mockImplementation(() => {
       setTimeout(() => {
         fakeChild.stdout.emit('data', 'pass ok');
-        fakeChild.emit('exit', 0);
+        fakeChild.emit('close', 0);
       }, 5);
       return fakeChild;
     });
@@ -173,5 +173,30 @@ describe('SshStore', () => {
     const res = await store.run(hostPass, 'whoami');
     expect(res.stdout).toBe('pass ok');
     expect(res.exitCode).toBe(0);
+  });
+
+  it('keeps option-like host values as one destination argument', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const spawnMock = vi.mocked(childProcess.spawn).mockImplementation(() => {
+      setTimeout(() => { child.emit('close', 0); }, 1);
+      return child;
+    });
+    const host: SshHost = { name: 'untrusted', host: '-oProxyCommand=unexpected command', port: 2222, user: null, auth: 'agent', keyFile: null, createdAt: 0 };
+    await store.run(host, 'uptime');
+    expect(spawnMock).toHaveBeenCalledWith(expect.stringMatching(/\/ssh$/), ['-p', '2222', '--', host.host, 'uptime'], expect.anything());
+  });
+
+  it('reports a failed SSH process start instead of leaving the request pending', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    vi.mocked(childProcess.spawn).mockImplementation(() => {
+      setTimeout(() => { child.emit('error', new Error('SSH executable disappeared')); }, 1);
+      return child;
+    });
+    const host: SshHost = { name: 'missing', host: 'remote.test', port: null, user: null, auth: 'agent', keyFile: null, createdAt: 0 };
+    await expect(store.run(host, 'uptime')).rejects.toThrow('SSH executable disappeared');
   });
 });

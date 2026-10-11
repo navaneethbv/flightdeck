@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import type { TablesStore } from '../tables/store.js';
 import type { NotesStore } from '../notes/store.js';
@@ -7,6 +8,7 @@ import type { Step, Playbook, StepResult } from './types.js';
 import { resolveTemplate, resolveTemplateLoose, type TemplateContext } from './templating.js';
 import { evaluateExpression } from './expression.js';
 import { resolveSecret } from '../secrets/keychain.js';
+import { resolveHttpDestination } from './http.js';
 
 export const MAX_PLAYBOOK_DEPTH = 10;
 
@@ -21,10 +23,12 @@ export interface EngineServices {
   tables: TablesStore;
   notes: NotesStore;
   messaging: MessagingStore;
-  callMcpTool(tool: string, args: Record<string, unknown>): Promise<unknown>;
+  callMcpTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   runHeadlessPrompt(prompt: string): Promise<{ stdout: string; exitCode: number }>;
   readPlaybook(name: string): Playbook | null;
-  confirm(prompt: string): Promise<boolean>;
+  confirm(prompt: string, signal?: AbortSignal): Promise<boolean>;
+  /** Optional caller policy for effects that do not pass through MCP tools. */
+  approveExternal?: (kind: 'bash' | 'http' | 'llm', stepId: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<boolean>;
   fromSession?: string | null;
 }
 
@@ -32,6 +36,7 @@ export interface RunOptions {
   inputs?: Record<string, unknown>;
   depth?: number;
   onProgress?: (stepId: string, result: StepResult) => void;
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -63,7 +68,7 @@ export class PlaybookEngine {
     let ok = true;
 
     for (const step of playbook.steps) {
-      const result = await this.runStep(step, ctx, results, depth);
+      const result = await this.runStep(step, ctx, results, depth, opts.signal);
       results[step.id] = result;
       recordStepContext(ctx, step.id, result);
       this.onProgress?.(step.id, result);
@@ -82,14 +87,21 @@ export class PlaybookEngine {
     step: Step,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    parentSignal?: AbortSignal
   ): Promise<StepResult> {
     const attempt = async (): Promise<StepResult> => {
+      const controller = new AbortController();
+      const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
       const timeoutSec = step.timeout;
       const withTimeout = (promise: Promise<StepResult>): Promise<StepResult> => {
         if (timeoutSec === undefined) return promise;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`step "${step.id}" timed out after ${timeoutSec}s`)), timeoutSec * 1000);
+          const timer = setTimeout(() => {
+            const error = new Error(`step "${step.id}" timed out after ${timeoutSec}s`);
+            controller.abort(error);
+            reject(error);
+          }, timeoutSec * 1000);
           promise.then(
             (r) => {
               clearTimeout(timer);
@@ -102,7 +114,7 @@ export class PlaybookEngine {
           );
         });
       };
-      return withTimeout(this.exec(step, ctx, results, depth));
+      return withTimeout(this.exec(step, ctx, results, depth, signal));
     };
 
     const retries = step.retries ?? 0;
@@ -126,9 +138,18 @@ export class PlaybookEngine {
     return { status: 'failed', output: null, error: lastError };
   }
 
-  private execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown): StepResult {
+  private async approveExternal(kind: 'bash' | 'http' | 'llm', stepId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.services.approveExternal && !await this.services.approveExternal(kind, stepId, args, signal)) {
+      throw new Error(`${kind} step "${stepId}" was not approved by the user`);
+    }
+    signal?.throwIfAborted();
+  }
+
+  private async execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown, signal?: AbortSignal): Promise<StepResult> {
     const command = String(t(step.command));
     const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
+    await this.approveExternal('bash', step.id, { command, cwd }, signal);
     const out = spawnSync('/bin/bash', ['-s'], {
       input: command,
       cwd,
@@ -142,8 +163,9 @@ export class PlaybookEngine {
       : { status: 'failed', output, error: `bash exited ${out.status}: ${(out.stderr ?? '').trim()}` };
   }
 
-  private async execLlm(step: Extract<Step, { type: 'llm' }>, t: (v: unknown) => unknown): Promise<StepResult> {
+  private async execLlm(step: Extract<Step, { type: 'llm' }>, t: (v: unknown) => unknown, signal?: AbortSignal): Promise<StepResult> {
     const prompt = String(t(step.prompt));
+    await this.approveExternal('llm', step.id, { prompt }, signal);
     const { stdout, exitCode } = await this.services.runHeadlessPrompt(prompt);
     return exitCode === 0
       ? { status: 'ok', output: { stdout } }
@@ -153,9 +175,10 @@ export class PlaybookEngine {
   private async execHttp(
     step: Extract<Step, { type: 'http' }>,
     t: (v: unknown) => unknown,
-    tl: (v: unknown) => unknown
+    tl: (v: unknown) => unknown,
+    signal?: AbortSignal
   ): Promise<StepResult> {
-    const url = String(t(step.url));
+    const url = resolveHttpDestination(step, String(t(step.url)));
     const headers = (tl(step.headers) as Record<string, string> | undefined) ?? undefined;
     const body = step.body === undefined ? undefined : tl(step.body);
     let reqBody: string | undefined;
@@ -164,27 +187,31 @@ export class PlaybookEngine {
     } else if (body !== undefined) {
       reqBody = JSON.stringify(body);
     }
+    await this.approveExternal('http', step.id, { url: url.href, origin: url.origin, method: step.method, headers, body: reqBody }, signal);
     const res = await fetch(url, {
       method: step.method,
       headers,
       body: reqBody,
+      redirect: 'error',
+      signal,
     });
     const text = await res.text();
     const output = { status: res.status, body: text, headers: Object.fromEntries(res.headers) };
     return res.ok
       ? { status: 'ok', output }
-      : { status: 'failed', output, error: `http ${res.status} from ${url}` };
+      : { status: 'failed', output, error: `http ${res.status} from ${url.origin}` };
   }
 
   private async execMcp(
     step: Extract<Step, { type: 'mcp' }>,
     t: (v: unknown) => unknown,
-    tl: (v: unknown) => unknown
+    tl: (v: unknown) => unknown,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const tool = String(t(step.tool));
     const args = (tl(step.arguments) as Record<string, unknown> | undefined) ?? {};
     try {
-      const output = await this.services.callMcpTool(tool, args);
+      const output = await this.services.callMcpTool(tool, args, signal);
       return { status: 'ok', output };
     } catch (err) {
       return { status: 'failed', output: null, error: (err as Error).message };
@@ -202,13 +229,14 @@ export class PlaybookEngine {
     step: Extract<Step, { type: 'playbook' }>,
     t: (v: unknown) => unknown,
     tl: (v: unknown) => unknown,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const name = String(t(step.name));
     const nested = this.services.readPlaybook(name);
     if (!nested) return { status: 'failed', output: null, error: `playbook "${name}" not found` };
     const nestedInputs = (tl(step.args) as Record<string, unknown> | undefined) ?? {};
-    const nestedResult = await this.run(nested, { inputs: nestedInputs, depth: depth + 1 });
+    const nestedResult = await new PlaybookEngine(this.services).run(nested, { inputs: nestedInputs, depth: depth + 1, signal, onProgress: this.onProgress });
     return nestedResult.ok
       ? { status: 'ok', output: { ok: true, results: nestedResult.results } }
       : { status: 'failed', output: { ok: false, results: nestedResult.results }, error: nestedResult.error };
@@ -219,7 +247,8 @@ export class PlaybookEngine {
     t: (v: unknown) => unknown,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const raw = String(step.if);
     const resolved = String(t(raw));
@@ -228,7 +257,7 @@ export class PlaybookEngine {
     let failed = false;
     let error: string | undefined;
     for (const nested of branch) {
-      const result = await this.runStep(nested, ctx, results, depth);
+      const result = await this.runStep(nested, ctx, results, depth, signal);
       results[nested.id] = result;
       recordStepContext(ctx, nested.id, result);
       this.onProgress?.(nested.id, result);
@@ -247,19 +276,21 @@ export class PlaybookEngine {
     step: Step,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
+    signal?.throwIfAborted();
     const t = (v: unknown): unknown => resolveTemplate(v, ctx);
     const tl = (v: unknown): unknown => resolveTemplateLoose(v, ctx);
     switch (step.type) {
       case 'bash':
-        return this.execBash(step, t);
+        return this.execBash(step, t, signal);
       case 'llm':
-        return this.execLlm(step, t);
+        return this.execLlm(step, t, signal);
       case 'http':
-        return this.execHttp(step, t, tl);
+        return this.execHttp(step, t, tl, signal);
       case 'mcp':
-        return this.execMcp(step, t, tl);
+        return this.execMcp(step, t, tl, signal);
       case 'data':
         return this.execData(step, tl);
       case 'message':
@@ -267,17 +298,18 @@ export class PlaybookEngine {
       case 'note':
         return this.execNote(step, tl);
       case 'playbook':
-        return this.execPlaybookStep(step, t, tl, depth);
+        return this.execPlaybookStep(step, t, tl, depth, signal);
       case 'wait': {
         const seconds = Number(tl(step.seconds));
-        await sleep(seconds * 1000);
+        await sleep(seconds * 1000, undefined, { signal });
         return { status: 'ok', output: { waited: seconds } };
       }
       case 'condition':
-        return this.execCondition(step, t, ctx, results, depth);
+        return this.execCondition(step, t, ctx, results, depth, signal);
       case 'manual': {
         const prompt = String(t(step.prompt));
-        const confirmed = await this.services.confirm(prompt);
+        const confirmed = await this.services.confirm(prompt, signal);
+        signal?.throwIfAborted();
         return { status: 'ok', output: { confirmed, prompt } };
       }
       case 'parallel': {
@@ -285,7 +317,7 @@ export class PlaybookEngine {
           step.branches.map(async (branch) => {
             const branchOut: StepResult[] = [];
             for (const nested of branch) {
-              const result = await this.runStep(nested, ctx, results, depth);
+              const result = await this.runStep(nested, ctx, results, depth, signal);
               results[nested.id] = result;
               recordStepContext(ctx, nested.id, result);
               this.onProgress?.(nested.id, result);
@@ -406,8 +438,4 @@ function recordStepContext(ctx: TemplateContext, stepId: string, result: StepRes
       ? (result.output as Record<string, unknown>)
       : {}),
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

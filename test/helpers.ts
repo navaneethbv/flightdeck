@@ -1,3 +1,4 @@
+import { requireExecutable } from '../src/core/executables.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,12 +12,12 @@ export interface Fixture {
 
 export function makeRepo(): Fixture {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-repo-'));
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
-  execFileSync('git', ['config', 'user.name', 'Flightdeck Test'], { cwd: root });
+  execFileSync(requireExecutable('git'), ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync(requireExecutable('git'), ['config', 'user.email', 'test@example.com'], { cwd: root });
+  execFileSync(requireExecutable('git'), ['config', 'user.name', 'Flightdeck Test'], { cwd: root });
   fs.writeFileSync(path.join(root, 'README.md'), '# fixture\n');
-  execFileSync('git', ['add', '.'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root });
+  execFileSync(requireExecutable('git'), ['add', '.'], { cwd: root });
+  execFileSync(requireExecutable('git'), ['commit', '-q', '-m', 'init'], { cwd: root });
   return {
     root,
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
