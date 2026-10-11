@@ -278,11 +278,11 @@
   </div>
 
   <!-- Interactive Modal: Logs / Spectator Mode -->
-  <div id="modal-logs" class="modal-backdrop hidden">
+  <div id="modal-logs" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="logs-modal-title">
     <div class="modal-window">
       <div class="modal-header">
         <h3 id="logs-modal-title">Live Session Logs</h3>
-        <button class="modal-close" id="btn-close-logs">×</button>
+        <button class="modal-close" id="btn-close-logs" aria-label="Close session logs">×</button>
       </div>
       <div class="modal-body">
         <pre id="logs-terminal-view" class="terminal-logs">Loading logs...</pre>

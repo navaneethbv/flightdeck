@@ -77,13 +77,14 @@ export function registerDoctor(program: Command): void {
         const root = projectRootOf(opts.project as string | undefined);
         const repair = opts.fix ? repairProject(root) : null;
         const checks = runDoctorChecks(root);
+        const ok = checks.every((c) => c.ok) && (repair?.ok ?? true);
+        process.exitCode = ok ? 0 : 1;
 
         if (opts.json) {
-          printJson({ ok: checks.every((c) => c.ok), checks, repair });
+          printJson({ ok, checks, repair });
           return;
         }
         printDoctorResults(checks, repair);
-        process.exitCode = checks.every((c) => c.ok) ? 0 : 1;
       } catch (err) {
         handleError(err);
       }
@@ -98,6 +99,7 @@ export function registerDoctor(program: Command): void {
       try {
         const root = projectRootOf(opts.project as string | undefined);
         const result = repairProject(root);
+        process.exitCode = result.ok ? 0 : 1;
         if (opts.json) {
           printJson(result);
           return;

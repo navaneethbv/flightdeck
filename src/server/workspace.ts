@@ -5,45 +5,7 @@ import { notesDir } from '../core/paths.js';
 import { NotesStore, NoteConflictError, type NoteSnapshot } from '../notes/store.js';
 import { TablesStore } from '../tables/store.js';
 import { listWorktrees, worktreeStatus, worktreeDiff } from '../worktrees/manager.js';
-
-const MAX_BODY_BYTES = 1024 * 1024;
-
-class RequestError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const value = await new Promise<unknown>((resolve, reject) => {
-    let size = 0;
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        chunks.length = 0;
-        reject(new RequestError(413, 'Request body exceeds 1 MiB'));
-      } else {
-        chunks.push(chunk);
-      }
-    });
-    req.on('end', () => {
-      if (size > MAX_BODY_BYTES) return;
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } catch {
-        reject(new RequestError(400, 'Request body must be valid JSON'));
-      }
-    });
-    req.on('error', reject);
-  });
-  if (!object(value)) throw new RequestError(400, 'Request body must be an object');
-  return value;
-}
+import { isRecord, readBody, RequestError } from './request-body.js';
 
 function noteFields(value: Record<string, unknown>): { title: string; body: string } {
   if (typeof value.title !== 'string' || !value.title.trim() || typeof value.body !== 'string') {
@@ -53,7 +15,7 @@ function noteFields(value: Record<string, unknown>): { title: string; body: stri
 }
 
 function expectedSnapshot(value: unknown): NoteSnapshot {
-  if (!object(value) || !Number.isSafeInteger(value.version) || Number(value.version) < 1 || typeof value.title !== 'string' || typeof value.body !== 'string') {
+  if (!isRecord(value) || !Number.isSafeInteger(value.version) || Number(value.version) < 1 || typeof value.title !== 'string' || typeof value.body !== 'string') {
     throw new RequestError(400, 'Expected note version, title, and body are required');
   }
   return { version: Number(value.version), title: value.title, body: value.body };

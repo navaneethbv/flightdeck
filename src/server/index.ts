@@ -15,7 +15,6 @@ import { MessagingStore } from '../messaging/store.js';
 import { WatchdogManager } from '../watchdog/manager.js';
 import { listWorktrees } from '../worktrees/manager.js';
 import { BUILTIN_PLAYBOOKS } from '../playbooks/templates.js';
-import { parsePlaybookYaml } from '../playbooks/parser.js';
 import { PlaybookEngine, type EngineServices, type RunResult } from '../playbooks/engine.js';
 import type { Playbook } from '../playbooks/types.js';
 import { ToolRegistry, type McpContext } from '../mcp/tools.js';
@@ -24,8 +23,10 @@ import { getDefaultHarness } from '../core/config.js';
 import { getAdapter } from '../sessions/harness.js';
 import { TelemetryStore } from '../sessions/telemetry.js';
 import { spawnSync } from 'node:child_process';
-import type { Session } from '../core/types.js';
+import type { Argus, Session } from '../core/types.js';
 import { handleWorkspaceRequest } from './workspace.js';
+import { readBody, RequestError } from './request-body.js';
+import { readDashboardPlaybook } from './playbooks.js';
 
 /**
  * How long a dashboard confirmation prompt stays open before the run fails
@@ -67,19 +68,9 @@ function publicSession(session: Session): Omit<Session, 'token'> {
   return rest;
 }
 
-async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => (body += chunk));
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (err) {
-        reject(err);
-      }
-    });
-    req.on('error', reject);
-  });
+function publicArgus(argus: Argus): Omit<Argus, 'cap'> {
+  const { cap: _cap, ...rest } = argus;
+  return rest;
 }
 
 export interface WebServerOptions {
@@ -91,6 +82,7 @@ export interface WebServerOptions {
 }
 
 interface PendingConfirmation {
+  runId: string;
   prompt: string;
   /** The exact operation this challenge was issued for; a confirm must match it. */
   operation: string;
@@ -110,7 +102,7 @@ interface PendingRun {
 
 /** Stable identity for a tool invocation, binding a confirm to tool + args. */
 function operationForTool(tool: string, args: Record<string, unknown>): string {
-  const digest = createHash('sha1').update(JSON.stringify(args ?? {})).digest('hex').slice(0, 12);
+  const digest = createHash('sha256').update(JSON.stringify(args ?? {})).digest('hex');
   return `tool:${tool}:${digest}`;
 }
 
@@ -136,6 +128,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
   const pendingRuns = new Map<string, PendingRun>();
   const pendingConfirms = new Map<string, PendingConfirmation>();
   const confirmTimeoutMs = opts.confirmTimeoutMs ?? CONFIRM_TIMEOUT_MS;
+  let stopping = false;
 
   /**
    * The token travels in the X-Flightdeck-Token header on every /api/* call.
@@ -159,24 +152,38 @@ export function createWebServer(opts: WebServerOptions = {}): {
    * A run never auto-confirms: a timeout or a denied request resolves false
    * and the step fails. Each challenge is single-use and expires.
    */
-  function makeConfirmRequester(run: PendingRun): (prompt: string, operation: string) => Promise<boolean> {
-    return (prompt: string, operation: string) =>
-      new Promise<boolean>((resolve) => {
-        const confirmId = randomUUID();
-        const timer = setTimeout(() => {
-          pendingConfirms.delete(confirmId);
-          run.status = 'running';
-          run.confirmId = undefined;
-          run.confirmPrompt = undefined;
-          run.confirmOperation = undefined;
-          resolve(false);
-        }, confirmTimeoutMs);
-        pendingConfirms.set(confirmId, { prompt, operation, timer, resolve });
-        run.status = 'awaiting_confirmation';
-        run.confirmId = confirmId;
-        run.confirmPrompt = prompt;
-        run.confirmOperation = operation;
+  function makeConfirmRequester(run: PendingRun): (prompt: string, operation: string, signal?: AbortSignal) => Promise<boolean> {
+    let previous = Promise.resolve();
+    return (prompt: string, operation: string, signal?: AbortSignal) => {
+      const decision = previous.then(() => {
+        if (stopping || signal?.aborted || run.status === 'failed' || run.status === 'succeeded') return false;
+        return new Promise<boolean>((resolve) => {
+          const confirmId = randomUUID();
+          const finish = (approved: boolean) => {
+            const active = run.status === 'awaiting_confirmation' && !stopping && !signal?.aborted;
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+            pendingConfirms.delete(confirmId);
+            if (run.status === 'awaiting_confirmation') run.status = 'running';
+            run.confirmId = undefined;
+            run.confirmPrompt = undefined;
+            run.confirmOperation = undefined;
+            resolve(approved && active);
+          };
+          const abort = () => finish(false);
+          const timer = setTimeout(() => finish(false), confirmTimeoutMs);
+          signal?.addEventListener('abort', abort, { once: true });
+          pendingConfirms.set(confirmId, { runId: run.id, prompt, operation, timer, resolve: finish });
+          run.status = 'awaiting_confirmation';
+          run.confirmId = confirmId;
+          run.confirmPrompt = prompt;
+          run.confirmOperation = operation;
+          broadcastUpdate();
+        });
       });
+      previous = decision.then(() => undefined);
+      return decision;
+    };
   }
 
   function broadcastUpdate(): void {
@@ -203,9 +210,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
     const fleets: Record<string, unknown>[] = [];
     for (const a of argusList) {
       const f = argusManager.fleet(a.id);
-      const { cap: _cap, ...fleet } = a;
       fleets.push({
-        ...fleet,
+        ...publicArgus(a),
         children: f.children.map((c) => ({
           ...c,
           session: c.session ? publicSession(c.session) : c.session,
@@ -304,12 +310,18 @@ export function createWebServer(opts: WebServerOptions = {}): {
         tables: new TablesStore(projectRoot),
         notes: new NotesStore(projectRoot),
         messaging: new MessagingStore(projectRoot),
-        callMcpTool: async (tool, args) => {
+        approveExternal: (kind, stepId, args, signal) => requestConfirm(
+          `Run ${kind} step "${stepId}" in playbook "${playbook.name}"? This can execute commands or make external requests.`,
+          operationForTool(`step:${kind}`, { stepId, ...args }),
+          signal
+        ),
+        callMcpTool: async (tool, args, signal) => {
           const def = registry.tools.get(tool);
           if (def && (def.risk === 'destructive' || def.risk === 'external')) {
-            const approved = await requestConfirm(`Run "${tool}"?`, operationForTool(tool, args));
+            const approved = await requestConfirm(`Run "${tool}"?`, operationForTool(tool, args), signal);
             if (!approved) throw new Error(`"${tool}" was not approved by the user`);
           }
+          signal?.throwIfAborted();
           return registry.call(tool, args);
         },
         runHeadlessPrompt: async (prompt) => {
@@ -322,7 +334,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
           });
           return { stdout: out.stdout ?? out.stderr ?? '', exitCode: out.status ?? -1 };
         },
-        readPlaybook: (n) => (n in BUILTIN_PLAYBOOKS ? parsePlaybookYaml(BUILTIN_PLAYBOOKS[n], n) : null),
+        readPlaybook: (name) => readDashboardPlaybook(projectRoot, name),
         confirm: (prompt) => requestConfirm(prompt, `manual:${prompt}`),
       };
       const engine = new PlaybookEngine(services);
@@ -334,6 +346,9 @@ export function createWebServer(opts: WebServerOptions = {}): {
       run.status = 'failed';
       run.error = (err as Error).message;
     } finally {
+      for (const pending of pendingConfirms.values()) {
+        if (pending.runId === run.id) pending.resolve(false);
+      }
       run.confirmId = undefined;
       run.confirmPrompt = undefined;
       run.confirmOperation = undefined;
@@ -437,7 +452,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // 3. Sessions APIs
     if (pathname === '/api/sessions/start' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const sm = new SessionManager(projectRoot);
         const harness = (body.harness as string) ?? getDefaultHarness();
         if (!isHarnessKind(harness)) throw new Error(`unknown harness "${harness}"`);
@@ -456,7 +471,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, publicSession(started));
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -470,7 +485,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, { stopped: true, id });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -483,7 +498,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         const logs = sm.getLogs(id, 300);
         sendJson(res, 200, { id, logs });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -491,7 +506,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // 4. Argus Mission & Fleets APIs
     if (pathname === '/api/argus/start' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const am = new ArgusManager(projectRoot);
         const fleet = am.start({
           name: (body.name as string) ?? 'argus',
@@ -501,23 +516,23 @@ export function createWebServer(opts: WebServerOptions = {}): {
           riskyTools: body.riskyTools === true,
         });
         broadcastUpdate();
-        sendJson(res, 200, fleet);
+        sendJson(res, 200, publicArgus(fleet));
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
 
     if (pathname === '/api/argus/pulse' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const id = String(body.id);
         const am = new ArgusManager(projectRoot);
         const progress = await am.pulse(id);
         broadcastUpdate();
         sendJson(res, 200, { id, progress });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -530,7 +545,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, { stopped: true, id });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -543,9 +558,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
         const budget = budgetState(projectRoot, id);
         const quota = fleet.argus.quotaId ? getQuota(fleet.argus.quotaId) : null;
         const tasks = new TaskBoard(projectRoot).list(id);
-        const { cap: _cap, ...cleanArgus } = fleet.argus;
         sendJson(res, 200, {
-          argus: cleanArgus,
+          argus: publicArgus(fleet.argus),
           children: fleet.children.map((c) => ({
             ...c,
             session: c.session ? publicSession(c.session) : c.session,
@@ -556,7 +570,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
           tasks,
         });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -569,7 +583,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, { paused: true, id });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -582,7 +596,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, { resumed: true, id });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -599,7 +613,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // 5. Notes APIs
     if (pathname === '/api/notes/create' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const ns = new NotesStore(projectRoot);
         const titleStr = typeof body.title === 'string' ? body.title : '';
         const bodyStr = typeof body.body === 'string' ? body.body : '';
@@ -607,14 +621,14 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, note);
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
 
     if (pathname === '/api/notes/update' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const ns = new NotesStore(projectRoot);
         const note = ns.updateNote(String(body.id), {
           title: typeof body.title === 'string' ? body.title : undefined,
@@ -623,7 +637,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, note);
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -631,7 +645,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // 6. Messages API (Reply now)
     if (pathname === '/api/messages/send' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const ms = new MessagingStore(projectRoot);
         const fromSession = (body.fromSession as string) ?? 'user';
         const toSession = (body.toSession as string) ?? null;
@@ -639,7 +653,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
         broadcastUpdate();
         sendJson(res, 200, msg);
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
@@ -650,34 +664,27 @@ export function createWebServer(opts: WebServerOptions = {}): {
     // confirmation round trip instead of being auto-approved.
     if (pathname === '/api/toolkit/run' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const name = String(body.action);
-        let playbookYaml = BUILTIN_PLAYBOOKS[name];
-        if (!playbookYaml) {
-          for (const dir of [playbooksDir(projectRoot), globalPlaybooksDir]) {
-            const file = path.join(dir, `${name}.yml`);
-            if (fs.existsSync(file)) {
-              playbookYaml = fs.readFileSync(file, 'utf8');
-              break;
-            }
-          }
-        }
-        if (!playbookYaml) throw new Error(`playbook "${name}" not found`);
-
-        const playbook = parsePlaybookYaml(playbookYaml, name);
+        const playbook = readDashboardPlaybook(projectRoot, name);
+        if (!playbook) throw new Error(`playbook "${name}" not found`);
         const runId = randomUUID();
         const run: PendingRun = { id: runId, status: 'running' };
         pendingRuns.set(runId, run);
         void executeToolkitRun(run, playbook, (body.inputs as Record<string, unknown>) ?? undefined);
         sendJson(res, 202, { runId, status: 'running' });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
       return;
     }
 
     if (pathname.startsWith('/api/toolkit/run/') && req.method === 'GET') {
-      const runId = decodeURIComponent(pathname.slice('/api/toolkit/run/'.length));
+      const runId = pathname.slice('/api/toolkit/run/'.length);
+      if (!SESSION_ID_RE.test(runId)) {
+        sendError(res, 404, 'Toolkit run not found');
+        return;
+      }
       const run = pendingRuns.get(runId);
       if (!run) {
         sendError(res, 404, `toolkit run "${runId}" not found`);
@@ -697,7 +704,7 @@ export function createWebServer(opts: WebServerOptions = {}): {
 
     if (pathname === '/api/toolkit/confirm' && req.method === 'POST') {
       try {
-        const body = await parseBody(req);
+        const body = await readBody(req);
         const confirmId = typeof body.confirmId === 'string' ? body.confirmId : '';
         const operation = typeof body.operation === 'string' ? body.operation : '';
         const pending = pendingConfirms.get(confirmId);
@@ -709,14 +716,17 @@ export function createWebServer(opts: WebServerOptions = {}): {
           sendError(res, 400, 'confirmation does not match the pending operation');
           return;
         }
-        clearTimeout(pending.timer);
-        pendingConfirms.delete(confirmId);
         const approved = body.ok === true;
         pending.resolve(approved);
         sendJson(res, 200, { confirmed: approved });
       } catch (err) {
-        sendError(res, 400, (err as Error).message);
+        sendError(res, err instanceof RequestError ? err.status : 400, (err as Error).message);
       }
+      return;
+    }
+
+    if (pathname.startsWith('/api/')) {
+      sendError(res, 404, 'API endpoint not found');
       return;
     }
 
@@ -738,6 +748,8 @@ export function createWebServer(opts: WebServerOptions = {}): {
       }),
     stop: () =>
       new Promise<void>((resolve) => {
+        stopping = true;
+        for (const pending of pendingConfirms.values()) pending.resolve(false);
         for (const client of sseClients) {
           try {
             client.end();

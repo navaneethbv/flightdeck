@@ -835,6 +835,7 @@ body {
 }
 
 .session-card {
+  --text-dim: var(--text-muted);
   background: #1f2126;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -842,8 +843,23 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  cursor: pointer;
   transition: border-color 0.15s ease;
+}
+
+.session-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.session-card-actions .btn-action {
+  min-height: 36px;
+}
+
+.session-card-actions button:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 3px;
 }
 
 .session-card:hover {

@@ -594,6 +594,17 @@ describe('Dashboard data integrity (E2E)', () => {
 });
 
 describe('Dashboard filters (E2E)', () => {
+  it('provides named log buttons and stop controls only for running sessions', () => {
+    const client = loadFleetClient(readAppJs());
+    client.setState({ sessions: [
+      { id: 'active', name: 'Active worker', harness: 'claude', status: 'running' },
+      { id: 'done', name: 'Finished worker', harness: 'claude', status: 'stopped' },
+    ] });
+    client.render();
+    const labels = client.container.querySelectorAll('button').map((button) => button.attributes['aria-label']);
+    expect(labels).toEqual(['View logs for Active worker', 'Stop session Active worker', 'View logs for Finished worker']);
+  });
+
   it('filters real session cards across refreshes, including empty results and clearing', () => {
     const client = loadFleetClient(readAppJs());
     client.setState({

@@ -10,6 +10,7 @@ const NO_VALUE = '-';
 let capabilityToken = '';
 let pendingConfirmResolve = null;
 let actedConfirmId = null;
+const stoppingSessions = new Set();
 
 /** sessionStorage key for the capability token; kept per tab session. */
 const TOKEN_STORAGE_KEY = 'flightdeck.capabilityToken';
@@ -660,8 +661,50 @@ function createSessionCard(s, hung) {
     </div>
   `;
 
-  card.addEventListener('click', () => openLogsModal(s.id, s.name));
+  const actions = document.createElement('div');
+  actions.className = 'session-card-actions';
+  const logs = document.createElement('button');
+  logs.type = 'button';
+  logs.className = 'btn-action';
+  logs.textContent = 'View logs';
+  logs.dataset.sessionAction = 'logs';
+  logs.setAttribute('aria-label', `View logs for ${s.name}`);
+  logs.addEventListener('click', () => openLogsModal(s.id, s.name));
+  actions.appendChild(logs);
+  if (s.status === 'running') {
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.className = 'btn-action';
+    stop.textContent = stoppingSessions.has(s.id) ? 'Stopping...' : 'Stop session';
+    stop.dataset.sessionAction = 'stop';
+    stop.disabled = stoppingSessions.has(s.id);
+    stop.setAttribute('aria-label', `Stop session ${s.name}`);
+    stop.addEventListener('click', () => stopSession(s));
+    actions.appendChild(stop);
+  }
+  card.appendChild(actions);
   return card;
+}
+
+async function stopSession(session) {
+  if (stoppingSessions.has(session.id) || !window.confirm(`Stop session "${session.name}"? Its running process will be terminated.`)) return;
+  stoppingSessions.add(session.id);
+  renderFleet();
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/stop`, {
+      method: 'POST',
+      headers: authedHeaders(),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) handleUnauthorized();
+    if (!response.ok) throw new Error(responseError(payload, response));
+    await fetchState();
+  } catch (error) {
+    showError(`Could not stop session: ${error.message}`);
+  } finally {
+    stoppingSessions.delete(session.id);
+    renderFleet();
+  }
 }
 
 /**
@@ -671,6 +714,9 @@ function createSessionCard(s, hung) {
 function renderFleet() {
   const container = el('sessions-container');
   if (!container) return;
+  const focused = document.activeElement;
+  const focusedSession = focused?.closest?.('.session-card')?.dataset.id;
+  const focusedAction = focused?.dataset?.sessionAction;
 
   const sessions = state.sessions ?? [];
   const query = (el('session-filter')?.value || '').trim().toLowerCase();
@@ -695,7 +741,13 @@ function renderFleet() {
 
   container.innerHTML = '';
   for (const s of visibleSessions) {
-    container.appendChild(createSessionCard(s, hung));
+    const card = createSessionCard(s, hung);
+    container.appendChild(card);
+    if (s.id === focusedSession && focusedAction) {
+      const buttons = [...card.querySelectorAll('button')];
+      const target = buttons.find((button) => button.dataset.sessionAction === focusedAction && !button.disabled);
+      (target ?? buttons[0])?.focus();
+    }
   }
 }
 
@@ -863,14 +915,47 @@ function renderReplyTargets() {
 
 // -------------------------------------------------------------------- modals
 
+let logsOpener = null;
+
 function openLogsModal(id, title) {
+  logsOpener = document.activeElement;
   activeSessionIdForLogs = id;
   const titleElem = el('logs-modal-title');
   const term = el('logs-terminal-view');
   if (titleElem) titleElem.textContent = `Logs: ${title || id}`;
   if (term) term.textContent = 'Loading...';
   el('modal-logs')?.classList.remove('hidden');
+  el('btn-close-logs')?.focus();
   loadLogs(id);
+}
+
+function closeLogsModal() {
+  el('modal-logs')?.classList.add('hidden');
+  if (logsOpener?.isConnected) {
+    logsOpener.focus();
+  } else {
+    const cards = el('sessions-container')?.querySelectorAll('.session-card') ?? [];
+    const card = [...cards].find((item) => item.dataset.id === activeSessionIdForLogs);
+    card?.querySelector('[data-session-action="logs"]')?.focus();
+  }
+}
+
+function logsKeyboard(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeLogsModal();
+  } else if (event.key === 'Tab') {
+    const buttons = [...el('modal-logs').querySelectorAll('button:not([disabled])')];
+    const first = buttons[0];
+    const last = buttons.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
 }
 
 async function loadLogs(id) {
@@ -908,7 +993,8 @@ function setupEventHandlers() {
     'modal-new-session',
     ['btn-close-new-session', 'btn-cancel-new-session']
   );
-  bindModal([], 'modal-logs', ['btn-close-logs', 'btn-dismiss-logs']);
+  for (const id of ['btn-close-logs', 'btn-dismiss-logs']) el(id)?.addEventListener('click', closeLogsModal);
+  el('modal-logs')?.addEventListener('keydown', logsKeyboard);
 
   el('btn-refresh-logs')?.addEventListener('click', () => {
     if (activeSessionIdForLogs) loadLogs(activeSessionIdForLogs);

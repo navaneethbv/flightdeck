@@ -21,10 +21,12 @@ export interface EngineServices {
   tables: TablesStore;
   notes: NotesStore;
   messaging: MessagingStore;
-  callMcpTool(tool: string, args: Record<string, unknown>): Promise<unknown>;
+  callMcpTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   runHeadlessPrompt(prompt: string): Promise<{ stdout: string; exitCode: number }>;
   readPlaybook(name: string): Playbook | null;
   confirm(prompt: string): Promise<boolean>;
+  /** Optional caller policy for effects that do not pass through MCP tools. */
+  approveExternal?: (kind: 'bash' | 'http' | 'llm', stepId: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<boolean>;
   fromSession?: string | null;
 }
 
@@ -85,11 +87,16 @@ export class PlaybookEngine {
     depth: number
   ): Promise<StepResult> {
     const attempt = async (): Promise<StepResult> => {
+      const controller = new AbortController();
       const timeoutSec = step.timeout;
       const withTimeout = (promise: Promise<StepResult>): Promise<StepResult> => {
         if (timeoutSec === undefined) return promise;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`step "${step.id}" timed out after ${timeoutSec}s`)), timeoutSec * 1000);
+          const timer = setTimeout(() => {
+            const error = new Error(`step "${step.id}" timed out after ${timeoutSec}s`);
+            controller.abort(error);
+            reject(error);
+          }, timeoutSec * 1000);
           promise.then(
             (r) => {
               clearTimeout(timer);
@@ -102,7 +109,7 @@ export class PlaybookEngine {
           );
         });
       };
-      return withTimeout(this.exec(step, ctx, results, depth));
+      return withTimeout(this.exec(step, ctx, results, depth, controller.signal));
     };
 
     const retries = step.retries ?? 0;
@@ -126,9 +133,18 @@ export class PlaybookEngine {
     return { status: 'failed', output: null, error: lastError };
   }
 
-  private execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown): StepResult {
+  private async approveExternal(kind: 'bash' | 'http' | 'llm', stepId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.services.approveExternal && !await this.services.approveExternal(kind, stepId, args, signal)) {
+      throw new Error(`${kind} step "${stepId}" was not approved by the user`);
+    }
+    signal?.throwIfAborted();
+  }
+
+  private async execBash(step: Extract<Step, { type: 'bash' }>, t: (v: unknown) => unknown, signal?: AbortSignal): Promise<StepResult> {
     const command = String(t(step.command));
     const cwd = step.cwd ? path.resolve(this.services.projectRoot, String(t(step.cwd))) : this.services.projectRoot;
+    await this.approveExternal('bash', step.id, { command, cwd }, signal);
     const out = spawnSync('/bin/bash', ['-s'], {
       input: command,
       cwd,
@@ -142,8 +158,9 @@ export class PlaybookEngine {
       : { status: 'failed', output, error: `bash exited ${out.status}: ${(out.stderr ?? '').trim()}` };
   }
 
-  private async execLlm(step: Extract<Step, { type: 'llm' }>, t: (v: unknown) => unknown): Promise<StepResult> {
+  private async execLlm(step: Extract<Step, { type: 'llm' }>, t: (v: unknown) => unknown, signal?: AbortSignal): Promise<StepResult> {
     const prompt = String(t(step.prompt));
+    await this.approveExternal('llm', step.id, { prompt }, signal);
     const { stdout, exitCode } = await this.services.runHeadlessPrompt(prompt);
     return exitCode === 0
       ? { status: 'ok', output: { stdout } }
@@ -153,7 +170,8 @@ export class PlaybookEngine {
   private async execHttp(
     step: Extract<Step, { type: 'http' }>,
     t: (v: unknown) => unknown,
-    tl: (v: unknown) => unknown
+    tl: (v: unknown) => unknown,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const url = String(t(step.url));
     const headers = (tl(step.headers) as Record<string, string> | undefined) ?? undefined;
@@ -164,10 +182,12 @@ export class PlaybookEngine {
     } else if (body !== undefined) {
       reqBody = JSON.stringify(body);
     }
+    await this.approveExternal('http', step.id, { url, method: step.method, headers, body: reqBody }, signal);
     const res = await fetch(url, {
       method: step.method,
       headers,
       body: reqBody,
+      signal,
     });
     const text = await res.text();
     const output = { status: res.status, body: text, headers: Object.fromEntries(res.headers) };
@@ -179,12 +199,13 @@ export class PlaybookEngine {
   private async execMcp(
     step: Extract<Step, { type: 'mcp' }>,
     t: (v: unknown) => unknown,
-    tl: (v: unknown) => unknown
+    tl: (v: unknown) => unknown,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const tool = String(t(step.tool));
     const args = (tl(step.arguments) as Record<string, unknown> | undefined) ?? {};
     try {
-      const output = await this.services.callMcpTool(tool, args);
+      const output = await this.services.callMcpTool(tool, args, signal);
       return { status: 'ok', output };
     } catch (err) {
       return { status: 'failed', output: null, error: (err as Error).message };
@@ -247,19 +268,20 @@ export class PlaybookEngine {
     step: Step,
     ctx: TemplateContext,
     results: Record<string, StepResult>,
-    depth: number
+    depth: number,
+    signal?: AbortSignal
   ): Promise<StepResult> {
     const t = (v: unknown): unknown => resolveTemplate(v, ctx);
     const tl = (v: unknown): unknown => resolveTemplateLoose(v, ctx);
     switch (step.type) {
       case 'bash':
-        return this.execBash(step, t);
+        return this.execBash(step, t, signal);
       case 'llm':
-        return this.execLlm(step, t);
+        return this.execLlm(step, t, signal);
       case 'http':
-        return this.execHttp(step, t, tl);
+        return this.execHttp(step, t, tl, signal);
       case 'mcp':
-        return this.execMcp(step, t, tl);
+        return this.execMcp(step, t, tl, signal);
       case 'data':
         return this.execData(step, tl);
       case 'message':

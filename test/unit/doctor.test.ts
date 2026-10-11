@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { makeFakeHarness, runCli } from '../helpers.js';
+import { makeFakeHarness, makeRepo, runCli } from '../helpers.js';
 
 const CONFIG_PATH = path.join(process.env.FLIGHTDECK_HOME ?? '', 'config.json');
 
@@ -31,6 +31,32 @@ function runDoctor(env?: NodeJS.ProcessEnv): { checks: DoctorCheck[]; ok: boolea
 }
 
 describe('deck doctor', () => {
+  it('reports failed checks with the same exit status in JSON and text modes', () => {
+    const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-doctor-status-'));
+    try {
+      const json = runCli(['doctor', '--json'], { cwd: process.cwd(), env: { PATH: emptyBin } });
+      const text = runCli(['doctor'], { cwd: process.cwd(), env: { PATH: emptyBin } });
+      expect(JSON.parse(json.stdout).ok).toBe(false);
+      expect(json.code).toBe(1);
+      expect(text.code).toBe(json.code);
+    } finally {
+      fs.rmSync(emptyBin, { recursive: true, force: true });
+    }
+  });
+
+  it.each([{ args: [] }, { args: ['--json'] }])('reports unsuccessful repair through its exit status: $args', ({ args }) => {
+    const fixture = makeRepo();
+    try {
+      fs.mkdirSync(path.join(fixture.root, '.flightdeck'));
+      fs.writeFileSync(path.join(fixture.root, '.flightdeck', 'state.db'), 'not a sqlite database');
+      const result = runCli(['repair', ...args], { cwd: fixture.root });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain('database check failed');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('reports an installed harness as authenticated only when its credential file exists', () => {
     const fake = makeFakeHarness('claude');
     const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flightdeck-doctor-profile-'));
