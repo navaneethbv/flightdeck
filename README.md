@@ -2,9 +2,9 @@
 
 > **Terminal & Web Control-Plane for AI Coding Agents** — Run, isolate, supervise, and orchestrate fleets of coding-agent harnesses (Google Gemini, Claude Code, OpenAI Codex, OpenCode) across Git worktrees with MCP tools, structured project memory, and autonomous Argus orchestration.
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-blue.svg)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.16.0-green.svg)](https://nodejs.org/)
-[![MCP](https://img.shields.io/badge/MCP-Protocol%20v1.12-purple.svg)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-Protocol-purple.svg)](https://modelcontextprotocol.io/)
 
 ---
 
@@ -36,7 +36,7 @@
 
 - **Multi-Harness Support**: First-class adapters for **Google Gemini** (`gemini`), **Claude Code** (`claude`), **Codex** (`codex`), and **OpenCode** (`opencode`) with auto-detection, custom config profiles, and dual MCP configuration writing (`.mcp.json` and `.gemini/settings.json`).
 - **Isolated Worktrees**: Branch-isolated Git worktrees preventing file-edit collisions between parallel agents, with post-create lifecycle hooks, status inspection, diff generation, and clean merge checks.
-- **Per-Session MCP Server**: 43 agent tools covering worktrees, notes, tables, messaging, playbooks, integrations, and SSH execution, protected by cryptographic session tokens and security policy matrices.
+- **Per-Session MCP Server**: Agent tools covering worktrees, notes, tables, messaging, playbooks, integrations, and SSH execution, protected by cryptographic session tokens and security policy matrices.
 - **Argus Multi-Agent Orchestration**: Autonomous fleet manager driven by Markdown Mission notes, staffing child subagents in dedicated worktrees with pulse cadence loops and completion deduplication.
 - **Watchdog Supervision**: Proactively detects hung/stuck sessions, loops, and interactive permission prompts (`[y/N]`), with auto-kill and inspection capabilities.
 - **Structured Project Memory**:
