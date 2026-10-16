@@ -863,13 +863,15 @@ describe('Dashboard login gate (E2E)', () => {
 
     try {
       const port = await server.start();
+      const stateUrl = new URL('/api/state', `http://127.0.0.1:${port}`);
 
       // The dashboard is handed the token exactly the way deck ui prints it.
       const stateResponse = Promise.withResolvers<Response>();
       const loggedIn = loadLoginClient(appJs, {
         href: `http://127.0.0.1:${port}/#token=${server.capabilityToken}`,
         fetchImpl: (url, init) => {
-          const response = fetch(`http://127.0.0.1:${port}${url}`, init);
+          expect(url).toBe('/api/state');
+          const response = fetch(stateUrl, init);
           stateResponse.resolve(response);
           return response;
         },
@@ -883,7 +885,10 @@ describe('Dashboard login gate (E2E)', () => {
       // the login gate is what the token actually gates.
       const locked = loadLoginClient(appJs, {
         href: `http://127.0.0.1:${port}/`,
-        fetchImpl: async (url, init) => fetch(`http://127.0.0.1:${port}${url}`, init),
+        fetchImpl: (url, init) => {
+          expect(url).toBe('/api/state');
+          return fetch(stateUrl, init);
+        },
       });
       await locked.api.submitLogin('nope');
       expect(locked.fetchCalls[0].status).toBe(401);
