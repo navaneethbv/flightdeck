@@ -865,14 +865,19 @@ describe('Dashboard login gate (E2E)', () => {
       const port = await server.start();
 
       // The dashboard is handed the token exactly the way deck ui prints it.
+      const stateResponse = Promise.withResolvers<Response>();
       const loggedIn = loadLoginClient(appJs, {
         href: `http://127.0.0.1:${port}/#token=${server.capabilityToken}`,
-        fetchImpl: async (url, init) =>
-          fetch(`http://127.0.0.1:${port}${url}`, init),
+        fetchImpl: (url, init) => {
+          const response = fetch(`http://127.0.0.1:${port}${url}`, init);
+          stateResponse.resolve(response);
+          return response;
+        },
       });
       expect(loggedIn.getToken()).toBe(server.capabilityToken);
-      await waitFor(() => loggedIn.fetchCalls.length >= 1);
-      expect(loggedIn.fetchCalls[0].status).toBe(200);
+      // Await the real request under the test timeout, rather than imposing a
+      // separate two-second deadline on loopback HTTP and runner scheduling.
+      expect((await stateResponse.promise).status).toBe(200);
 
       // The same server, reached without a token, refuses the state fetch, so
       // the login gate is what the token actually gates.
