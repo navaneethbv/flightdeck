@@ -886,21 +886,33 @@ export class ArgusManager {
     const argus = this.get(id);
     if (!argus) return;
 
+    // `deck argus stop` runs in another process: it can only reach this loop
+    // through the status row, so a pulse that began while running re-reads it
+    // before every phase that spawns a worker or spends a brain call.
+    const startedRunning = argus.status === 'running';
+    const stopRequested = (): boolean =>
+      this.stopping || (startedRunning && this.get(id)?.status === 'stopped');
+
     if (this.board.list(id).length === 0) {
       await this.plan(id);
     }
+    if (stopRequested()) return;
 
     this.recoverOrphans(id);
     await this.resumeRevisions(id);
-    await this.dispatch(id);
+    if (stopRequested()) return;
+    await this.dispatch(id, stopRequested);
+    if (stopRequested()) return;
     await this.runGatesForReported(id);
+    if (stopRequested()) return;
     await this.resumeRevisions(id);
 
-    if (this.questions.pending(id).length > 0) {
+    if (this.questions.pending(id).length > 0 && !stopRequested()) {
       await this.answerQuestions(id);
     }
-    if (this.board.list(id, 'in_review').length > 0) {
+    if (this.board.list(id, 'in_review').length > 0 && !stopRequested()) {
       await this.drainReviews(id);
+      if (stopRequested()) return;
       await this.resumeRevisions(id);
     }
 
@@ -948,7 +960,7 @@ export class ArgusManager {
   }
 
   /** Assigns dispatchable tasks to fresh worker sessions, up to the child limit. */
-  private async dispatch(id: string): Promise<void> {
+  private async dispatch(id: string, stopRequested: () => boolean): Promise<void> {
     const argus = this.get(id);
     if (!argus) return;
     const active = this.children(argus).filter((c) => this.isActiveChild(c));
@@ -956,7 +968,7 @@ export class ArgusManager {
     const tasks = this.board.dispatchable(id);
     let i = 0;
     while (slots > 0 && i < tasks.length) {
-      if (this.stopping) break;
+      if (stopRequested()) break;
       try {
         await this.spawnNextWorker(id);
         slots -= 1;
